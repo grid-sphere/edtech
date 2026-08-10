@@ -315,12 +315,23 @@ export default function ProfilePage() {
               )}
             </div>
 
-            <div className="flex justify-end">
+            {/*
+              Full width on a phone, right-aligned from `sm` up.
+
+              A half-width button floated to the right edge of a narrow screen
+              is both awkward to look at and awkward to reach one-handed — the
+              far corner is the hardest part of a phone for a thumb. Given the
+              whole width it reads as the obvious end of the form.
+
+              pt-1 + border-t: the button was sitting flush against the last
+              field with nothing marking where the form ended.
+            */}
+            <div className="flex flex-col sm:flex-row sm:justify-end pt-4 border-t-2 border-black/10">
               <Button
                 type="submit"
                 variant="primary"
                 disabled={savingProfile}
-                className="py-2.5 px-6 text-base rounded-xl border-2"
+                className="w-full sm:w-auto py-2.5 px-6 text-base rounded-xl border-2"
               >
                 {savingProfile ? 'Saving...' : 'Save Changes'}
               </Button>
@@ -371,12 +382,12 @@ export default function ProfilePage() {
               </Field>
             </div>
 
-            <div className="flex justify-end">
+            <div className="flex flex-col sm:flex-row sm:justify-end pt-4 border-t-2 border-black/10">
               <Button
                 type="submit"
                 variant="secondary"
                 disabled={savingPw}
-                className="py-2.5 px-6 text-base rounded-xl border-2"
+                className="w-full sm:w-auto py-2.5 px-6 text-base rounded-xl border-2"
               >
                 {savingPw ? 'Updating...' : 'Update Password'}
               </Button>
@@ -444,27 +455,31 @@ export default function ProfilePage() {
           </SettingCard>
 
           {/*
-            Students only, and last on the page.
+            Last on the page, and available to everyone.
 
-            A teacher's account owns the courses they created, so closing it
-            would remove them for every student — that is an administrator's
-            decision, not a button here. The route refuses them as well; this
-            just avoids offering something that would be declined.
+            Teachers were excluded here while the route refused them. It no
+            longer does: closing an account anonymises the row rather than
+            deleting it, so the ON DELETE CASCADE on courses.educator_id never
+            fires and a teacher's courses survive. Leaving this student-only
+            would mean teachers had no way to close an account the API is
+            perfectly willing to close.
           */}
-          {user.role === 'student' && (
-            <SettingCard
-              title="Delete account"
-              description="Remove your details permanently. This cannot be undone."
+          <SettingCard
+            title="Delete account"
+            description={
+              user.role === 'student'
+                ? 'Remove your details permanently. This cannot be undone.'
+                : 'Remove your details permanently. Your courses are kept for enrolled students.'
+            }
+          >
+            <button
+              type="button"
+              onClick={() => navigate('/deleteaccount')}
+              className="w-full h-11 inline-flex items-center justify-center gap-2 px-5 font-bold text-sm border-2 border-black rounded-xl bg-white text-red-600 shadow-[3px_3px_0px_0px_#111] hover:bg-red-50 active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all"
             >
-              <button
-                type="button"
-                onClick={() => navigate('/deleteaccount')}
-                className="w-full h-11 inline-flex items-center justify-center gap-2 px-5 font-bold text-sm border-2 border-black rounded-xl bg-white text-red-600 shadow-[3px_3px_0px_0px_#111] hover:bg-red-50 active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all"
-              >
-                <Trash2 size={16} strokeWidth={2.5} /> Delete my account
-              </button>
-            </SettingCard>
-          )}
+              <Trash2 size={16} strokeWidth={2.5} /> Delete my account
+            </button>
+          </SettingCard>
 
           {/*
             Not a card — a footer link. It belongs on the page (people look for

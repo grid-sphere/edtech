@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
-import { Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { Outlet, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
-import { Compass, BookOpen, LayoutDashboard, BarChart3, User as UserIcon, LifeBuoy, Home } from 'lucide-react';
+import { Compass, BookOpen, LayoutDashboard, BarChart3, User as UserIcon, LifeBuoy, Home, Search } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import PageTransition from '../ui/PageTransition.jsx';
 import NotificationBell from './NotificationBell.jsx';
@@ -46,10 +46,77 @@ function TabButton({ icon: Icon, label, active, pressed, onClick }) {
   );
 }
 
+/**
+ * The home search box, living in the header.
+ *
+ * State is held in the URL rather than in React, because the input and the list
+ * it filters are now in different components — the header and the page. A
+ * context would work, but `?q=` also survives a refresh, can be linked, and
+ * keeps the back button meaningful.
+ *
+ * `replace` matters: without it every keystroke would push a history entry, and
+ * leaving the page would mean pressing Back once per character typed.
+ */
+function HeaderSearch() {
+  const [params, setParams] = useSearchParams();
+  const value = params.get('q') ?? '';
+
+  const onChange = (next) => {
+    const p = new URLSearchParams(params);
+    // Removed rather than left empty, so the URL is a clean /home once the box
+    // is cleared instead of a trailing "?q=".
+    if (next) p.set('q', next);
+    else p.delete('q');
+    setParams(p, { replace: true });
+  };
+
+  return (
+    /*
+     * One row at every width: logo, then this, then the bell.
+     *
+     * `flex-1 min-w-0` is what makes that safe on a phone. min-w-0 is the
+     * load-bearing half — a flex item refuses to shrink below its content by
+     * default, so without it the input's intrinsic width would push the bell
+     * off the edge instead of the field simply getting narrower.
+     *
+     * The arithmetic on a 360px screen: 32px of gutter, a 65px logo, a 36px
+     * bell and ~24px of gaps leaves a little over 200px for the field, which
+     * fits the placeholder.
+     */
+    <div className="relative flex-1 min-w-0 mx-2 md:mx-4 md:max-w-[200px] lg:max-w-sm">
+      <Search
+        size={16}
+        strokeWidth={3}
+        className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none"
+      />
+      <input
+        type="search"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Search your classes..."
+        aria-label="Search your classes"
+        className="w-full h-10 pl-10 pr-4 rounded-xl border-2 border-black bg-white text-sm
+                   font-medium focus:outline-none focus:shadow-[3px_3px_0px_0px_#F26B4D]
+                   transition-shadow"
+      />
+    </div>
+  );
+}
+
 export default function MainLayout() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+
+  /*
+   * Only on the student home page, because that is the only list it filters.
+   *
+   * A search box in the header of every page would be a promise the app does
+   * not keep: on Explore it would sit beside that page's own search doing
+   * nothing, and on Profile it would filter an empty set. Better to show it
+   * where it works than to show it everywhere and have it lie.
+   */
+  const showSearch = user?.role !== 'educator' && location.pathname === '/home';
   const [helpOpen, setHelpOpen] = useState(false);
   // Set when the drawer is opened from a ticket notification, so it can land
   // on that thread instead of the list.
@@ -90,7 +157,7 @@ export default function MainLayout() {
      <nav className="relative z-50 flex flex-wrap justify-between items-center px-4 md:px-12 py-2 md:py-3 sticky top-0 bg-[#FDF1E9] shadow-[0px_4px_10px_rgba(0,0,0,0.12)]">
         {/* Logo */}
         <div 
-          className="relative cursor-pointer group inline-block" 
+          className="relative cursor-pointer group inline-block shrink-0" 
           onClick={() => navigate(user?.role === 'educator' ? '/dashboard' : '/home')}
         >
           <img src="/sv-logo.png" alt="Sharda Vidyapeeth" className="h-10 md:h-12 w-auto" />
@@ -115,8 +182,10 @@ export default function MainLayout() {
           })}
         </div>
 
+        {showSearch && <HeaderSearch />}
+
         {/* User Info */}
-        <div className="flex items-center gap-2 sm:gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           <NotificationBell onOpenSupport={openHelp} />
 
           {/*

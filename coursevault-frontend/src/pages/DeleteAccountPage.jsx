@@ -96,111 +96,119 @@ export default function DeleteAccountPage() {
           Delete your account
         </h1>
 
-        {isEducator ? (
-          /*
-           * Refused in the UI as well as the API.
-           *
-           * Courses belong to the account that created them, so closing a
-           * teacher's account would take every course — and every student's
-           * progress in them — with it. Showing the form and failing on submit
-           * would be worse: it reads as a bug rather than as a rule.
-           */
-          <div className="mt-4 flex items-start gap-2 p-3 border-2 border-amber-400 bg-amber-50 rounded-xl">
-            <AlertTriangle size={16} strokeWidth={3} className="shrink-0 mt-0.5 text-amber-800" />
-            <p className="text-sm font-bold text-amber-900">
-              Teacher accounts can't be closed here. The courses you created
-              belong to this account, and deleting it would remove them for
-              every student. Please contact your administrator.
+          <p className="text-sm text-gray-600 font-medium mt-1 mb-4">
+            This cannot be undone.
+          </p>
+
+          {/*
+            Teachers see what happens to their courses before they decide,
+            not afterwards. This is the part of the outcome that affects
+            other people, so it is called out on its own rather than being
+            one bullet among five.
+          */}
+          {isEducator && (
+            <div className="mb-4 flex items-start gap-2 p-3 border-2 border-amber-400 bg-amber-50 rounded-xl">
+              <AlertTriangle size={16} strokeWidth={3} className="shrink-0 mt-0.5 text-amber-800" />
+              <div className="text-sm font-bold text-amber-900">
+                <p className="mb-1">Your courses will be affected.</p>
+                <p className="font-medium">
+                  They stop appearing to new students, so nobody else can
+                  enrol. Students already enrolled keep full access to
+                  everything, and their progress is not touched. Your courses
+                  are not deleted — an administrator can hand them to another
+                  teacher later.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div className="p-3 mb-5 border-2 border-black rounded-xl bg-[#F9E076]">
+            <p className="font-bold text-sm mb-1">What happens</p>
+            <ul className="text-xs font-medium list-disc pl-4 space-y-0.5">
+              <li>Your name, email address and phone number are removed.</li>
+              <li>You will not be able to sign in again.</li>
+              {isEducator ? (
+                <li>
+                  Your name is replaced with &ldquo;Former teacher&rdquo; on
+                  courses you created.
+                </li>
+              ) : (
+                <li>Your course access ends immediately.</li>
+              )}
+              {/* Stated plainly rather than buried. Someone deleting an
+                  account after paying deserves to know a refund is a
+                  separate conversation, before they click, not after. */}
+              <li>
+                A record of any purchase is kept for accounting. It is no
+                longer linked to your name.
+              </li>
+            </ul>
+            {/* The bullet above summarises; this is where the full rule
+                lives. Someone weighing an irreversible choice should be one
+                tap from the detail, not asked to trust a summary. */}
+            <p className="text-xs font-medium mt-2">
+              Full detail in the{' '}
+              <Link to="/privacypolicy" className="underline font-bold">
+                Privacy Policy
+              </Link>
+              .
             </p>
           </div>
-        ) : (
-          <>
-            <p className="text-sm text-gray-600 font-medium mt-1 mb-4">
-              This cannot be undone.
-            </p>
 
-            <div className="p-3 mb-5 border-2 border-black rounded-xl bg-[#F9E076]">
-              <p className="font-bold text-sm mb-1">What happens</p>
-              <ul className="text-xs font-medium list-disc pl-4 space-y-0.5">
-                <li>Your name, email address and phone number are removed.</li>
-                <li>You will not be able to sign in again.</li>
-                <li>Your course access ends immediately.</li>
-                {/* Stated plainly rather than buried. Someone deleting an
-                    account after paying deserves to know a refund is a
-                    separate conversation, before they click, not after. */}
-                <li>
-                  A record of any purchase is kept for accounting. It is no
-                  longer linked to your name.
-                </li>
-              </ul>
-              {/* The bullet above summarises; this is where the full rule
-                  lives. Someone weighing an irreversible choice should be one
-                  tap from the detail, not asked to trust a summary. */}
-              <p className="text-xs font-medium mt-2">
-                Full detail in the{' '}
-                <Link to="/privacypolicy" className="underline font-bold">
-                  Privacy Policy
-                </Link>
-                .
-              </p>
+          {error && (
+            <div className="p-3 mb-4 border-2 border-red-500 bg-red-50 rounded-xl font-bold text-red-700 text-sm">
+              {error}
             </div>
+          )}
 
-            {error && (
-              <div className="p-3 mb-4 border-2 border-red-500 bg-red-50 rounded-xl font-bold text-red-700 text-sm">
-                {error}
-              </div>
-            )}
+          <form onSubmit={submit} className="flex flex-col gap-4">
+            <label className="block">
+              <span className="font-bold text-sm mb-1 block">Your password</span>
+              <PasswordInput
+                className="w-full border-2 border-black rounded-lg px-3 py-2 font-medium bg-white focus:outline-none focus:ring-2 focus:ring-red-500"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                required
+              />
+            </label>
 
-            <form onSubmit={submit} className="flex flex-col gap-4">
-              <label className="block">
-                <span className="font-bold text-sm mb-1 block">Your password</span>
-                <PasswordInput
-                  className="w-full border-2 border-black rounded-lg px-3 py-2 font-medium bg-white focus:outline-none focus:ring-2 focus:ring-red-500"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  autoComplete="current-password"
-                  required
-                />
-              </label>
+            <label className="block">
+              <span className="font-bold text-sm mb-1 block">
+                Type <span className="font-mono">DELETE</span> to confirm
+              </span>
+              <input
+                className="w-full border-2 border-black rounded-lg px-3 py-2 font-medium bg-white focus:outline-none focus:ring-2 focus:ring-red-500"
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                // Not autocapitalised: a phone keyboard would offer "Delete"
+                // and the comparison is exact, leaving the button dead with
+                // no explanation.
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck="false"
+                placeholder="DELETE"
+              />
+            </label>
 
-              <label className="block">
-                <span className="font-bold text-sm mb-1 block">
-                  Type <span className="font-mono">DELETE</span> to confirm
-                </span>
-                <input
-                  className="w-full border-2 border-black rounded-lg px-3 py-2 font-medium bg-white focus:outline-none focus:ring-2 focus:ring-red-500"
-                  value={confirm}
-                  onChange={(e) => setConfirm(e.target.value)}
-                  // Not autocapitalised: a phone keyboard would offer "Delete"
-                  // and the comparison is exact, leaving the button dead with
-                  // no explanation.
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck="false"
-                  placeholder="DELETE"
-                />
-              </label>
-
-              <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 mt-1">
-                <button
-                  type="button"
-                  onClick={() => navigate('/profile')}
-                  className="px-5 py-2.5 rounded-xl border-2 border-black bg-white font-bold text-sm"
-                >
-                  Keep my account
-                </button>
-                <button
-                  type="submit"
-                  disabled={!ready || busy}
-                  className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl border-2 border-black bg-red-600 text-white font-bold text-sm shadow-[3px_3px_0px_0px_#111] disabled:opacity-50 disabled:shadow-none"
-                >
-                  {busy ? <Loader size={15} className="animate-spin" /> : <Trash2 size={15} strokeWidth={3} />}
-                  {busy ? 'Closing...' : 'Delete my account'}
-                </button>
-              </div>
-            </form>
-          </>
-        )}
+            <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 mt-1">
+              <button
+                type="button"
+                onClick={() => navigate('/profile')}
+                className="px-5 py-2.5 rounded-xl border-2 border-black bg-white font-bold text-sm"
+              >
+                Keep my account
+              </button>
+              <button
+                type="submit"
+                disabled={!ready || busy}
+                className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl border-2 border-black bg-red-600 text-white font-bold text-sm shadow-[3px_3px_0px_0px_#111] disabled:opacity-50 disabled:shadow-none"
+              >
+                {busy ? <Loader size={15} className="animate-spin" /> : <Trash2 size={15} strokeWidth={3} />}
+                {busy ? 'Closing...' : 'Delete my account'}
+              </button>
+            </div>
+          </form>
       </div>
     </div>
   );
