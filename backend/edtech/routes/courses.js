@@ -151,11 +151,25 @@ router.get("/:id", async (req, res) => {
     try {
         const { id } = req.params;
 
+        /*
+         * Fetch first, authorise below — `status = 'published'` used to be in
+         * this WHERE clause.
+         *
+         * That conflated "listed publicly" with "you may open it", and the two
+         * are not the same thing. Unpublishing a course a student has already
+         * paid for would 404 their course page: their enrolment, their
+         * progress and their payment would all still exist, and the course
+         * would simply be gone.
+         *
+         * That is not hypothetical. Closing a teacher's account unpublishes
+         * their courses, so without this every student they taught would lose
+         * access the moment the teacher left.
+         */
         const courseResult = await pool.query(`
             SELECT c.*, u.name as educator_name
             FROM courses c
             JOIN users u ON c.educator_id = u.id
-            WHERE c.id = $1 AND c.status = 'published' AND c.is_active = true
+            WHERE c.id = $1 AND c.is_active = true
         `, [id]);
 
         if (courseResult.rows.length === 0) {
@@ -206,6 +220,18 @@ router.get("/:id", async (req, res) => {
             }
         }
 
+        /*
+         * The published check, moved here so it can take enrolment into
+         * account.
+         *
+         * An unpublished course is hidden from the catalogue but must stay
+         * open to the two people entitled to it: someone already enrolled, and
+         * the educator who built it. Everyone else gets the same 404 as before,
+         * so nothing became more visible than it was.
+         */
+        if (course.status !== 'published' && !isEnrolled && !isCreator) {
+            return res.status(404).json({ error: "Course not found" });
+        }
 
         const modulesResult = await pool.query(`
             SELECT * FROM modules

@@ -199,7 +199,7 @@ export default function PrivacyPolicyPage() {
 
           <Section title="Closing your account">
             <p>
-              Students can close their own account at any time from{' '}
+              You can close your own account at any time from{' '}
               <Link to="/deleteaccount" className="font-bold underline">
                 Delete account
               </Link>{' '}
@@ -207,7 +207,7 @@ export default function PrivacyPolicyPage() {
               <a href={`mailto:${CONTACT}`} className="font-bold underline">
                 {CONTACT}
               </a>
-              .
+              . This applies to students and teachers alike.
             </p>
             <p>
               When you do, your name, email address, mobile number and school
@@ -215,10 +215,11 @@ export default function PrivacyPolicyPage() {
               you will not be able to sign in again. This cannot be undone.
             </p>
             <p>
-              Teacher accounts cannot be closed from the app. The courses a
-              teacher created belong to that account, and removing it would
-              delete those courses and every enrolled student's progress. Write
-              to us instead and we will handle it properly.
+              <strong>If you are a teacher:</strong> the courses you created are
+              not deleted. They stop being offered to new students, while every
+              student already enrolled keeps full access to the material and
+              their progress. Your name is replaced with &ldquo;Former
+              teacher&rdquo; on those courses.
             </p>
           </Section>
 

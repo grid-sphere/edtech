@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Search, Flame, Check, LayoutGrid, ChevronLeft, ChevronRight, Stethoscope,
+  Flame, Check, LayoutGrid, ChevronLeft, ChevronRight, Stethoscope,
   Compass, GraduationCap, ClipboardList,
   BookOpen, Users, Play, ArrowRight, Loader,
 } from 'lucide-react';
@@ -377,7 +377,19 @@ export default function StudentHomePage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [query, setQuery] = useState('');
+  /*
+   * The search box now lives in the header, so the text arrives through the
+   * URL rather than local state. This page mostly reads it — the one exception
+   * is the empty state below, which has to be able to clear a search it did
+   * not start.
+   */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const query = searchParams.get('q') ?? '';
+  const clearQuery = useCallback(() => {
+    const p = new URLSearchParams(searchParams);
+    p.delete('q');
+    setSearchParams(p, { replace: true });
+  }, [searchParams, setSearchParams]);
   const [category, setCategory] = useState('all');
 
   useEffect(() => {
@@ -502,17 +514,6 @@ export default function StudentHomePage() {
           {error}
         </div>
       )}
-
-      {/* ------------------------------------------------------------ search */}
-      <div className="relative mb-3">
-        <Search size={16} strokeWidth={3} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500" />
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search your classes..."
-          className="w-full pl-10 pr-4 py-2 rounded-xl border-2 border-black bg-white text-sm font-medium focus:outline-none focus:shadow-[3px_3px_0px_0px_#F26B4D] transition-shadow"
-        />
-      </div>
 
       {/* ---------------------------------------------------------- carousel
 
@@ -643,7 +644,7 @@ export default function StudentHomePage() {
           ) : (
             <button
               type="button"
-              onClick={() => { setCategory('all'); setQuery(''); }}
+              onClick={() => { setCategory('all'); clearQuery(); }}
               className="mt-4 px-4 py-2 rounded-full border-2 border-black bg-[#A7E2D1] font-bold text-xs shadow-[2px_2px_0px_0px_#111]"
             >
               Show all classes

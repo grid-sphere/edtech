@@ -1265,31 +1265,22 @@ async function consumeResetCode({ email, code }, { consume }) {
 /*
  * Anonymise, do not DELETE the row.
  *
- * Fifteen tables reference users(id), and most of them cascade. A real DELETE
- * would take enrolments, payments, quiz attempts and support threads with it —
- * including the payment records the business is required to keep, and the other
- * side of conversations a teacher may still need. Scrubbing the identifying
- * columns achieves what the person is actually asking for (their name, email
- * and phone number stop existing here) while leaving the rows that are not
- * about them intact.
+ * Nine tables cascade from users(id) — courses, enrolments, payments, quiz
+ * attempts, support threads. A real DELETE would take all of them, including
+ * the payment records the business is required to keep and every student's
+ * progress in a teacher's courses. Scrubbing the identifying columns gives the
+ * person what they are actually asking for (their name, email and phone number
+ * stop existing here) while leaving the rows that are not about them intact.
  *
- * Educators are refused outright, in the route and not only in the UI:
- * courses.educator_id cascades, so closing a teacher's account would erase
- * every course they built and every student's progress inside it. That is not
- * a decision one button should be able to make.
+ * This is also why teachers can now close their own accounts. The cascade only
+ * fires on DELETE; an UPDATE never triggers it, so a teacher's courses and the
+ * work their students did inside them survive untouched. The row stays, holding
+ * the foreign keys together, with nothing identifying left on it.
  */
 router.delete("/account", authMiddleware, async (req, res) => {
     try {
         const { password, confirm } = req.body || {};
-
-        if (req.user.role !== "student") {
-            return res.status(403).json({
-                error:
-                    "Teacher accounts can't be closed here. The courses you created belong " +
-                    "to this account and deleting it would remove them for every student. " +
-                    "Please contact your administrator.",
-            });
-        }
+        const isEducator = req.user.role !== "student";
 
         /*
          * Typing DELETE is not security — anyone who can reach this route can
@@ -1342,9 +1333,30 @@ router.delete("/account", authMiddleware, async (req, res) => {
          */
         const deadHash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
 
+        /*
+         * A teacher's courses are unpublished, not deleted or hidden.
+         *
+         * Deleting them would destroy work students paid for. Leaving them
+         * published would keep selling a course with nobody behind it to
+         * answer a question or fix a broken video. Unpublishing splits the
+         * difference: it disappears from the catalogue, while everyone already
+         * enrolled keeps full access — GET /courses/:id admits enrolled
+         * students to unpublished courses precisely so this is true.
+         *
+         * Reversible on purpose. An administrator can hand the courses to
+         * another teacher and publish them again; nothing here is destroyed.
+         */
+        if (isEducator) {
+            await pool.query(
+                `UPDATE courses SET status = 'draft'
+                  WHERE educator_id = $1 AND status = 'published'`,
+                [req.user.id]
+            );
+        }
+
         await pool.query(
             `UPDATE users
-                SET name = 'Deleted user',
+                SET name = $3,
                     -- Unique (the column is), unroutable (.invalid is reserved
                     -- by RFC 2606 and can never resolve), and clearly not a
                     -- typo when someone reads it in the database later.
@@ -1362,7 +1374,14 @@ router.delete("/account", authMiddleware, async (req, res) => {
                     email_verified = FALSE,
                     deleted_at = NOW()
               WHERE id = $1 AND deleted_at IS NULL`,
-            [req.user.id, deadHash]
+            /*
+             * A teacher's name is not private data here — it is a byline. It
+             * is joined onto every course listing, so whatever goes in this
+             * column is what students read next to a course they are studying.
+             * "Deleted user" reads as a bug and quietly announces that someone
+             * closed their account; "Former teacher" is a state, not an error.
+             */
+            [req.user.id, deadHash, isEducator ? 'Former teacher' : 'Deleted user']
         );
 
         /*
