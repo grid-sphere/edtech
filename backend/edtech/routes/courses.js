@@ -1,5 +1,12 @@
 ﻿import express from "express";
-import { parseCategory, COURSE_CATEGORIES } from "../constants/courseCategories.js";
+import {
+    CATEGORY_IDS,
+    parseCategory,
+    parseCategoryLabel,
+    ensureCategory,
+    categoryExists,
+    listCategories,
+} from "../constants/courseCategories.js";
 import pool from "../config/database.js";
 import authMiddleware from "../middleware/auth.js";
 import { activeEnrolmentSql, parseDurationMonths, parseDurationMinutes } from "../utils/enrollmentAccess.js";
@@ -10,6 +17,42 @@ import { JWT_SECRET } from "../config/jwt.js";
 
 const router = express.Router();
 
+/**
+ * Resolve the category for a create or update request.
+ *
+ * A teacher can either pick an existing category or type a new one. When
+ * `category_label` is present it is a new one: the label is slugified into an
+ * id and the row is created if it does not exist, so the next teacher picks it
+ * from the list rather than typing it again and inventing a second spelling.
+ *
+ * Returns the same shape as parseCategory so callers handle one failure path.
+ */
+async function resolveCategory(body, userId) {
+    const hasLabel = Object.prototype.hasOwnProperty.call(body ?? {}, "category_label")
+        && String(body.category_label ?? "").trim() !== "";
+
+    if (!hasLabel) {
+        const parsed = parseCategory(body?.category);
+        if (!parsed.ok || parsed.value === null) return parsed;
+        /*
+         * Shape is not existence. A well-formed slug the school has never
+         * created would save fine and then show under no chip at all, because
+         * the chip list comes from the table. Refusing it here is the
+         * difference between "custom categories" and "free text".
+         */
+        if (!(await categoryExists(pool, parsed.value))) {
+            return { ok: false, error: `Unknown category "${parsed.value}". Create it first.` };
+        }
+        return parsed;
+    }
+
+    const parsed = parseCategoryLabel(body.category_label);
+    if (!parsed.ok) return parsed;
+    await ensureCategory(pool, parsed.id, parsed.label, userId);
+    return { ok: true, value: parsed.id };
+}
+
+
 /*
  * GET /api/courses/categories
  *
@@ -17,8 +60,146 @@ const router = express.Router();
  * Express takes the first route whose pattern fits, and "/:id" fits
  * "/categories" perfectly well.
  */
-router.get("/categories", (req, res) => {
-    res.json({ success: true, categories: COURSE_CATEGORIES });
+router.get("/categories", async (req, res) => {
+    /*
+     * Read from the table, not the constant: custom categories a teacher added
+     * are exactly what a caller asking for "the categories" needs, and the
+     * constant only knows the five that ship with the app.
+     */
+    res.json({ success: true, categories: await listCategories(pool) });
+});
+
+
+/**
+ * PUT /api/courses/categories/reorder
+ *
+ * Body: { ids: string[] } — every category id, in the order students should
+ * see them.
+ *
+ * Registered before "/:id" for the same reason as the GET above: "/:id" would
+ * happily match "categories" and this would never be reached.
+ */
+router.put("/categories/reorder", authMiddleware, async (req, res) => {
+    try {
+        if (req.user.role === "student") {
+            return res.status(403).json({ error: "Only teachers can reorder categories." });
+        }
+
+        const ids = Array.isArray(req.body?.ids) ? req.body.ids : null;
+        if (!ids || ids.length === 0) {
+            return res.status(400).json({ error: "ids must be a non-empty array" });
+        }
+        if (new Set(ids).size !== ids.length) {
+            return res.status(400).json({ error: "ids must not repeat" });
+        }
+
+        /*
+         * Reject unknown ids rather than ignoring them.
+         *
+         * A list containing something that does not exist means the client is
+         * working from a stale view of the categories, and silently applying
+         * the rest would produce an order neither side asked for.
+         */
+        const { rows } = await pool.query(`SELECT id FROM course_categories`);
+        const known = new Set(rows.map((r) => r.id));
+        const unknown = ids.filter((id) => !known.has(id));
+        if (unknown.length) {
+            return res.status(400).json({ error: `Unknown category: ${unknown.join(", ")}` });
+        }
+
+        /*
+         * One statement, not one per row.
+         *
+         * A loop would leave the chips half-reordered if the connection died
+         * mid-way — and with no transaction, students refreshing at that moment
+         * would see an order that never existed.
+         */
+        await pool.query(
+            `UPDATE course_categories AS c
+                SET sort_order = v.ord
+               FROM (SELECT unnest($1::text[]) AS id,
+                            generate_subscripts($1::text[], 1) AS ord) AS v
+              WHERE c.id = v.id`,
+            [ids]
+        );
+
+        res.json({ success: true, categories: await listCategories(pool) });
+    } catch (err) {
+        console.error("Reorder categories error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+
+/**
+ * DELETE /api/courses/categories/:id
+ *
+ * Removes a custom category and untags every course filed under it.
+ *
+ * Before "/:id", like the other two — Express would otherwise read
+ * "categories" as a course id.
+ */
+router.delete("/categories/:id", authMiddleware, async (req, res) => {
+    const client = await pool.connect();
+    try {
+        if (req.user.role === "student") {
+            return res.status(403).json({ error: "Only teachers can delete categories." });
+        }
+
+        const { id } = req.params;
+
+        /*
+         * Built-ins cannot be deleted, and saying so is the honest answer.
+         *
+         * Deleting the row would appear to work and change nothing: the five
+         * are shipped in the frontend for first paint, mergeCategories adds
+         * back any the server omits, and categoryExists accepts them whether
+         * or not a row exists. The chip would reappear on the next load and
+         * the teacher would reasonably conclude the button is broken.
+         */
+        if (CATEGORY_IDS.includes(id)) {
+            return res.status(400).json({
+                error: "The built-in categories can't be deleted. You can move them to the end instead.",
+            });
+        }
+
+        const found = await client.query(
+            `SELECT id, label FROM course_categories WHERE id = $1`, [id]
+        );
+        if (found.rows.length === 0) {
+            return res.status(404).json({ error: "No such category." });
+        }
+
+        /*
+         * Both statements or neither.
+         *
+         * courses.category has no foreign key, so these two are the only thing
+         * keeping it consistent. Deleting the row without clearing the courses
+         * would leave them pointing at a category that no longer exists — under
+         * no chip, findable by search alone, and invisible until a student
+         * asked where their class went.
+         */
+        await client.query("BEGIN");
+        const cleared = await client.query(
+            `UPDATE courses SET category = NULL, updated_at = NOW() WHERE category = $1`,
+            [id]
+        );
+        await client.query(`DELETE FROM course_categories WHERE id = $1`, [id]);
+        await client.query("COMMIT");
+
+        res.json({
+            success: true,
+            // What it cost, so the caller can say so rather than guess.
+            untagged: cleared.rowCount ?? 0,
+            categories: await listCategories(pool),
+        });
+    } catch (err) {
+        try { await client.query("ROLLBACK"); } catch { /* the connection is already gone */ }
+        console.error("Delete category error:", err);
+        res.status(500).json({ error: err.message });
+    } finally {
+        client.release();
+    }
 });
 
 // GET /api/courses
@@ -311,7 +492,7 @@ router.post("/", authMiddleware, async (req, res) => {
         if (!duration.ok) return res.status(400).json({ error: duration.error });
         const testDuration = parseDurationMinutes(access_duration_minutes);
         if (!testDuration.ok) return res.status(400).json({ error: testDuration.error });
-        const cat = parseCategory(category);
+        const cat = await resolveCategory(req.body, req.user.id);
         if (!cat.ok) return res.status(400).json({ error: cat.error });
 
         const client = await pool.connect();
@@ -430,8 +611,38 @@ router.put("/:id", authMiddleware, async (req, res) => {
         if (!duration.ok) return res.status(400).json({ error: duration.error });
         const testDuration = parseDurationMinutes(access_duration_minutes);
         if (!testDuration.ok) return res.status(400).json({ error: testDuration.error });
-        const cat = parseCategory(category);
+        const cat = await resolveCategory(req.body, req.user.id);
         if (!cat.ok) return res.status(400).json({ error: cat.error });
+
+        /*
+         * "Omitted" and "explicitly cleared" are different requests.
+         *
+         * These three columns cannot use COALESCE, because null is a real
+         * value for them — a teacher must be able to clear a category or drop
+         * a course back to lifetime access. But assigning them unconditionally
+         * means any caller that sends a partial body silently wipes them: a
+         * request carrying only { category } would set access_duration_months
+         * to null and quietly convert a 6-month course to lifetime access for
+         * every future purchase.
+         *
+         * That is not hypothetical — the category dropdown on the teacher
+         * dashboard sends exactly that body. So presence in req.body decides
+         * whether each column is touched at all.
+         */
+        const has = (k) => Object.prototype.hasOwnProperty.call(req.body, k);
+        const setMonths = has('access_duration_months');
+        const setMinutes = has('access_duration_minutes');
+        /*
+         * `category_label` counts as setting the category too.
+         *
+         * A teacher typing a new category sends the label, and resolveCategory
+         * turns it into an id. Keying the flag on `category` alone would drop
+         * that id on the floor: the new category row would be created, the
+         * course would keep its old tag, and the teacher would see the name
+         * they invented appear in the list while their own course refused to
+         * move into it.
+         */
+        const setCategory = has('category') || has('category_label');
 
         const result = await pool.query(`
     UPDATE courses
@@ -440,19 +651,16 @@ router.put("/:id", authMiddleware, async (req, res) => {
         price = COALESCE($3, price),
         status = COALESCE($4, status),
         thumbnail_url = COALESCE($5, thumbnail_url),
-        -- Not COALESCE: clearing the field back to lifetime access has to be
-        -- possible, and COALESCE would read that null as "leave unchanged".
         -- Only applies to future purchases; enrolments already sold keep the
         -- expires_at stamped when they were bought.
-        access_duration_months = $6,
-        access_duration_minutes = $7,
-        -- Also not COALESCE, for the same reason: a teacher must be able to
-        -- clear the category back to uncategorised once they have set one.
-        category = $8,
+        access_duration_months = CASE WHEN $10 THEN $6 ELSE access_duration_months END,
+        access_duration_minutes = CASE WHEN $11 THEN $7 ELSE access_duration_minutes END,
+        category = CASE WHEN $12 THEN $8 ELSE category END,
         updated_at = NOW()
     WHERE id = $9
     RETURNING *
-`, [title, description, price, status, thumbnail_url, duration.months, testDuration.minutes, cat.value, id]);
+`, [title, description, price, status, thumbnail_url, duration.months, testDuration.minutes, cat.value, id,
+    setMonths, setMinutes, setCategory]);
 
         /*
          * This is the hook that actually fires in practice: a teacher builds a

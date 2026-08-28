@@ -1,11 +1,146 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, GraduationCap, ChevronRight, Layers, Trash2, Pencil, ChevronUp, ChevronDown, Search, X } from 'lucide-react';
+import { Plus, GraduationCap, ChevronRight, Layers, Trash2, Pencil, ChevronUp, ChevronDown, Search, X, ArrowUpDown } from 'lucide-react';
 import CourseCard from '../components/course/CourseCard.jsx';
 import Button from '../components/ui/Button.jsx';
 import CourseModal from '../components/educator/CourseModal.jsx';
 import { fetchAPI } from '../services/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
+import { useCategories } from '../hooks/useCategories.js';
+
+/**
+ * The category badge on a course row, changeable in place.
+ *
+ * Category was already editable — but only inside the Edit modal, four clicks
+ * and a form away, and the dashboard never showed the current value. A teacher
+ * could not tell which chip a class sat under without opening it, which made
+ * the tag feel like it had not saved.
+ *
+ * A native <select> rather than a custom menu: it is one tap on a phone, gets
+ * the platform picker for free, and cannot be scrolled out of a container.
+ */
+const NEW_CATEGORY = '__new__';
+
+function CategorySelect({ course, onChanged, categories, addLocal }) {
+  const [value, setValue] = useState(course.category || '');
+  const [saving, setSaving] = useState(false);
+  const [failed, setFailed] = useState(false);
+  // Non-null while the teacher is typing a new category name.
+  const [draft, setDraft] = useState(null);
+
+  const change = async (next, label = null) => {
+    if (next === NEW_CATEGORY) {
+      // Not a value — a request for the text box. Nothing is saved until the
+      // name is submitted, so the badge keeps showing the current category.
+      setDraft('');
+      return;
+    }
+    const previous = value;
+    /*
+     * Optimistic, with an explicit revert.
+     *
+     * The select is the only thing showing this value, so leaving it on the
+     * old category until the request returns reads as the tap not registering
+     * and invites a second tap. On failure it goes back and says so, rather
+     * than silently displaying a category the server never accepted.
+     */
+    setValue(next);
+    setSaving(true);
+    setFailed(false);
+    try {
+      await fetchAPI(`/courses/${course.id}`, {
+        method: 'PUT',
+        // Only the category. Sending the whole course would let a stale copy
+        // of the row overwrite a title someone edited in another tab.
+        body: JSON.stringify(
+          label ? { category_label: label } : { category: next || null }
+        ),
+      });
+      onChanged?.(course.id, next || null);
+    } catch (err) {
+      setValue(previous);
+      setFailed(true);
+      console.error('Could not change category', err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  /*
+   * Submitting the typed name is what saves it — not blurring, and not the
+   * dropdown. The teacher must be able to change their mind mid-word without
+   * having created a category they did not want.
+   */
+  const submitDraft = async () => {
+    const label = (draft || '').trim();
+    if (!label) { setDraft(null); return; }
+    const id = addLocal?.(label);
+    setDraft(null);
+    if (id) await change(id, label);
+  };
+
+  if (draft !== null) {
+    return (
+      <form
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={(e) => { e.preventDefault(); submitDraft(); }}
+        className="inline-flex items-center gap-1"
+      >
+        <input
+          autoFocus
+          value={draft}
+          maxLength={40}
+          onChange={(e) => setDraft(e.target.value)}
+          // Escape backs out without saving. A text box with no visible cancel
+          // is a trap on a keyboard.
+          onKeyDown={(e) => { if (e.key === 'Escape') setDraft(null); }}
+          placeholder="New category"
+          aria-label={`New category for ${course.title}`}
+          className="text-[10px] font-bold uppercase tracking-wider border-2 border-black rounded-full px-2 py-0.5 w-28 bg-white focus:outline-none"
+        />
+        <button
+          type="submit"
+          className="text-[10px] font-bold uppercase border-2 border-black rounded-full px-2 py-0.5 bg-[#A7E2D1]"
+        >
+          Add
+        </button>
+        <button
+          type="button"
+          onClick={() => setDraft(null)}
+          className="text-[10px] font-bold uppercase text-gray-500 px-1"
+        >
+          Cancel
+        </button>
+      </form>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1">
+      <select
+        value={value}
+        disabled={saving}
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => change(e.target.value)}
+        aria-label={`Category for ${course.title}`}
+        title={failed ? 'Could not save — try again' : 'Which student chip this appears under'}
+        className={`text-[10px] font-bold uppercase tracking-wider border-2 rounded-full pl-2 pr-1 py-0.5 cursor-pointer transition-colors disabled:opacity-50 ${
+          failed
+            ? 'border-red-500 bg-red-50 text-red-700'
+            : value
+              ? 'border-black bg-[#A7E2D1]'
+              : 'border-dashed border-black/40 bg-white text-gray-500'
+        }`}
+      >
+        <option value="">No category</option>
+        {categories.map((c) => (
+          <option key={c.id} value={c.id}>{c.label}</option>
+        ))}
+        <option value={NEW_CATEGORY}>+ New category…</option>
+      </select>
+    </span>
+  );
+}
 
 export default function EducatorDashboardPage() {
   const navigate = useNavigate();
@@ -28,6 +163,42 @@ export default function EducatorDashboardPage() {
   // Tracks which single top-level course row is currently expanded.
   // null = nothing expanded.
   const [selectedCourseId, setSelectedCourseId] = useState(null);
+
+  /*
+   * Patch the row in place rather than refetching the whole dashboard.
+   *
+   * A reload would collapse whichever class the teacher had expanded, which is
+   * a strange thing to happen after changing a dropdown.
+   */
+  /*
+   * Fetched once here rather than inside each badge. A dashboard with twenty
+   * classes would otherwise make twenty identical requests, and a category
+   * created on one row would not appear in the others' dropdowns.
+   */
+  const { categories, addLocal, move, remove } = useCategories();
+  const [tagError, setTagError] = useState('');
+
+  /*
+   * Confirmation names the cost, in courses.
+   *
+   * "Are you sure?" is a question nobody can answer usefully. "3 classes will
+   * lose this tag" is the fact that decides it — and the count comes from the
+   * server with the list, so it is not a guess made in the browser.
+   */
+  const deleteTag = async (c) => {
+    const n = c.course_count ?? 0;
+    const consequence = n === 0
+      ? 'No classes are using it.'
+      : `${n} class${n === 1 ? '' : 'es'} will lose this tag. The class${n === 1 ? '' : 'es'} stay — only the tag is removed.`;
+    if (!window.confirm(`Delete the "${c.label}" tag?\n\n${consequence}\n\nThis cannot be undone.`)) return;
+
+    setTagError('');
+    const res = await remove(c.id);
+    if (!res.ok) setTagError(res.error);
+  };
+
+  const applyCategory = (courseId, category) =>
+    setCourses((prev) => prev.map((c) => (c.id === courseId ? { ...c, category } : c)));
 
   const loadMyCourses = () => {
     setIsLoading(true);
@@ -228,6 +399,89 @@ export default function EducatorDashboardPage() {
         </div>
       </div>
 
+
+      {/* --------------------------------------------------- category ordering
+
+          Collapsed by default. This is a setting, not a daily task, and an
+          always-open panel of arrows would sit between the teacher and the
+          courses they actually came to edit.                                */}
+      <details className="mb-8 border-[3px] border-black rounded-2xl bg-white shadow-[6px_6px_0px_0px_#111] overflow-hidden">
+        <summary className="cursor-pointer select-none px-5 py-3 font-black uppercase text-sm tracking-wider flex items-center gap-2">
+          <ArrowUpDown size={16} strokeWidth={3} />
+          Tag order
+          <span className="font-medium normal-case tracking-normal text-xs text-gray-500">
+            — the order students see the filter chips in
+          </span>
+        </summary>
+
+        <div className="px-5 pb-5 pt-1">
+          <ul className="flex flex-col gap-2 max-w-md list-none m-0 p-0">
+            {categories.map((c, i) => (
+              <li
+                key={c.id}
+                className="flex items-center gap-2 border-2 border-black rounded-xl px-3 py-2 bg-[#FDF1E9]"
+              >
+                <span className="w-6 shrink-0 text-xs font-black tabular-nums text-gray-500">{i + 1}</span>
+                <span className="flex-1 min-w-0 truncate font-bold text-sm">{c.label}</span>
+                {/*
+                  Disabled at the ends rather than hidden, so the row does not
+                  change width as a tag moves and the buttons stay where the
+                  reader's finger already is.
+                */}
+                <button
+                  type="button"
+                  onClick={() => move(c.id, 'up')}
+                  disabled={i === 0}
+                  aria-label={`Move ${c.label} earlier`}
+                  className="w-7 h-7 shrink-0 border-2 border-black rounded flex items-center justify-center bg-white hover:bg-gray-100 disabled:opacity-25 disabled:cursor-not-allowed transition-colors"
+                >
+                  <ChevronUp size={14} strokeWidth={3} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => move(c.id, 'down')}
+                  disabled={i === categories.length - 1}
+                  aria-label={`Move ${c.label} later`}
+                  className="w-7 h-7 shrink-0 border-2 border-black rounded flex items-center justify-center bg-white hover:bg-gray-100 disabled:opacity-25 disabled:cursor-not-allowed transition-colors"
+                >
+                  <ChevronDown size={14} strokeWidth={3} />
+                </button>
+                {/*
+                  Built-ins render the button disabled rather than hidden.
+
+                  Hiding it would leave a gap that reads as a rendering bug and
+                  makes the rows different widths. Disabled with a reason says
+                  the rule out loud — and the server refuses them anyway, so
+                  this only avoids offering something that would be declined.
+                */}
+                <button
+                  type="button"
+                  onClick={() => deleteTag(c)}
+                  disabled={c.is_builtin}
+                  aria-label={`Delete ${c.label}`}
+                  title={c.is_builtin
+                    ? "Built-in tags can't be deleted — move it to the end instead"
+                    : `Delete ${c.label}`}
+                  className="w-7 h-7 shrink-0 border-2 border-black rounded flex items-center justify-center bg-white text-red-600 hover:bg-red-50 disabled:opacity-25 disabled:cursor-not-allowed disabled:text-gray-400 transition-colors"
+                >
+                  <Trash2 size={13} strokeWidth={3} />
+                </button>
+              </li>
+            ))}
+          </ul>
+          {tagError && (
+            <p className="text-xs font-bold text-red-700 border-2 border-red-500 bg-red-50 rounded-xl px-3 py-2 mt-3 max-w-md">
+              {tagError}
+            </p>
+          )}
+          <p className="text-xs font-medium text-gray-500 mt-3">
+            Saved as you go. Students see this order on their home screen; "All"
+            always stays first. Deleting a tag removes it from any class using
+            it — the classes themselves are not touched.
+          </p>
+        </div>
+      </details>
+
       <h2 className="text-3xl font-bold mb-4 tracking-tight">Your Courses</h2>
 
       <div className="relative mb-6 max-w-md">
@@ -315,6 +569,9 @@ export default function EducatorDashboardPage() {
                         <span className="text-[10px] font-bold uppercase tracking-wider bg-black text-white px-2 py-0.5 rounded-full">
                           {course.status || 'draft'}
                         </span>
+                        {/* Beside the status pill: both answer "where does
+                            this show up for students right now". */}
+                        <CategorySelect course={course} onChanged={applyCategory} categories={categories} addLocal={addLocal} />
                         {childCount > 0 && (
                           <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider bg-[#A7E2D1] border border-black px-2 py-0.5 rounded-full">
                             <Layers size={10} /> {childCount} added
@@ -390,12 +647,22 @@ export default function EducatorDashboardPage() {
                                 <ChevronDown size={14} strokeWidth={3} />
                               </button>
                             </div>
-                            <button
-                              onClick={() => openEditModal(child)}
-                              className="flex items-center gap-1 font-bold text-xs border-2 border-black rounded-full px-3 py-1 bg-[#87CEFA] hover:bg-[#6cc0f5] transition-colors shadow-[2px_2px_0px_0px_#111]"
-                            >
-                              <Pencil size={12} strokeWidth={3} /> Edit
-                            </button>
+                            <div className="flex items-center gap-2">
+                              {/*
+                                Subjects get the control too. A class now
+                                appears under a chip if the class OR any of its
+                                subjects carries that category, so tagging a
+                                subject is a real action with a visible effect
+                                — it needs to be visible and changeable here.
+                              */}
+                              <CategorySelect course={child} onChanged={applyCategory} categories={categories} addLocal={addLocal} />
+                              <button
+                                onClick={() => openEditModal(child)}
+                                className="flex items-center gap-1 font-bold text-xs border-2 border-black rounded-full px-3 py-1 bg-[#87CEFA] hover:bg-[#6cc0f5] transition-colors shadow-[2px_2px_0px_0px_#111]"
+                              >
+                                <Pencil size={12} strokeWidth={3} /> Edit
+                              </button>
+                            </div>
                           </div>
                           <CourseCard
                             course={child}

@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { X, UploadCloud, Image as ImageIcon, Trash2 } from 'lucide-react';
 import Button from '../ui/Button';
 import { fetchAPI, BASE_URL, resolveMediaUrl } from '../../services/api';
-import { COURSE_CATEGORIES } from '../../constants/courseCategories';
+import { slugifyCategory } from '../../constants/courseCategories';
+import { useCategories } from '../../hooks/useCategories';
 
 export default function CourseModal({ isOpen, onClose, course = null, onSave, parentCourseId = null }) {
   const [title, setTitle] = useState('');
@@ -12,6 +13,25 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
   const [thumbnailUrl, setThumbnailUrl] = useState('');
   // '' means uncategorised, which is a valid choice rather than a missing one.
   const [category, setCategory] = useState('');
+  /*
+   * The label typed into the "new category" box.
+   *
+   * Separate from `category` because the two answer different questions: this
+   * is what the teacher wants it called, `category` is which existing one is
+   * selected. Keeping them in one field would mean guessing which was meant.
+   */
+  const [newCategory, setNewCategory] = useState('');
+  const { categories } = useCategories();
+
+  /*
+   * A sentinel option rather than a separate "add" button.
+   *
+   * The teacher is already in the dropdown deciding where this course belongs;
+   * "None of these" is one of the answers, and it belongs in the same list
+   * rather than beside it as a control they have to notice.
+   */
+  const NEW_CATEGORY = '__new__';
+  const creatingCategory = category === NEW_CATEGORY;
   const [validityMonths, setValidityMonths] = useState(''); // blank = lifetime
   // 'months' for real courses, 'minutes' purely to verify the lockout works.
   const [validityUnit, setValidityUnit] = useState('months');
@@ -26,6 +46,7 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
       setStatus(course.status || 'draft');
       setThumbnailUrl(course.thumbnail_url || '');
       setCategory(course.category || '');
+      setNewCategory('');
       // A course saved in test minutes reopens in test minutes, rather than
       // silently showing a blank month field that would wipe it on save.
       if (course.access_duration_minutes) {
@@ -127,7 +148,13 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
       thumbnail_url: thumbnailUrl,
       // Sent even when blank: the server reads null as "clear it", which is how
       // a category gets removed once set.
-      category: category || null,
+      category: creatingCategory ? null : (category || null),
+      /*
+       * Only present when a new one is being created. The server takes its
+       * presence as the instruction to create-and-assign, so sending an empty
+       * string on every save would turn each one into a failed validation.
+       */
+      ...(creatingCategory ? { category_label: newCategory.trim() } : {}),
       // Blank means lifetime; the server stores null. Only one of the two is
       // ever set — minutes wins server-side, so sending both would be
       // ambiguous about which the teacher actually chose.
@@ -239,14 +266,47 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
               className="w-full bg-[#F4F4F4] border-2 border-black rounded-xl px-4 py-2 font-medium focus:outline-none focus:shadow-[4px_4px_0px_0px_#F26B4D]"
             >
               <option value="">No category</option>
-              {COURSE_CATEGORIES.map(c => (
+              {categories.map(c => (
                 <option key={c.id} value={c.id}>{c.label}</option>
               ))}
+              <option value={NEW_CATEGORY}>+ New category…</option>
             </select>
-            <p className="text-xs text-gray-500 font-medium mt-1">
-              Decides which filter students find this course under on their home
-              screen. Leave blank and it shows under "All" only.
-            </p>
+
+            {creatingCategory ? (
+              <div className="mt-2">
+                <input
+                  autoFocus
+                  value={newCategory}
+                  onChange={e => setNewCategory(e.target.value)}
+                  maxLength={40}
+                  placeholder="e.g. Rajasthan Board"
+                  aria-label="New category name"
+                  className="w-full bg-white border-2 border-black rounded-xl px-4 py-2 font-medium focus:outline-none focus:shadow-[4px_4px_0px_0px_#F26B4D]"
+                />
+                {/*
+                  The id is shown before saving, not after.
+
+                  "HP Board" and "hp board" become the same category, and that
+                  is the whole reason custom names are safe — but it is
+                  surprising unless you can see it happening. Showing the slug
+                  is also how a teacher notices they are about to recreate a
+                  category that already exists under another spelling.
+                */}
+                {newCategory.trim() && (
+                  <p className="text-xs font-medium mt-1 text-gray-600">
+                    Saved as <span className="font-mono font-bold">{slugifyCategory(newCategory) || '—'}</span>
+                    {categories.some(c => c.id === slugifyCategory(newCategory)) && (
+                      <span className="text-amber-700"> — this matches an existing category, and will be filed under it.</span>
+                    )}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs text-gray-500 font-medium mt-1">
+                Decides which filter students find this course under on their home
+                screen. Leave blank and it shows under "All" only.
+              </p>
+            )}
           </div>
 
           <div className="flex gap-4">

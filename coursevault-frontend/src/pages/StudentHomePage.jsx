@@ -3,11 +3,11 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Flame, Check, LayoutGrid, ChevronLeft, ChevronRight, Stethoscope,
   Compass, GraduationCap, ClipboardList,
-  BookOpen, Users, Play, ArrowRight, Loader,
+  BookOpen, Users, Play, ArrowRight, Loader, Tag,
 } from 'lucide-react';
 import { fetchAPI, resolveMediaUrl } from '../services/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
-import { COURSE_CATEGORIES, categoryLabel } from '../constants/courseCategories.js';
+import { categoryLabel, mergeCategories } from '../constants/courseCategories.js';
 
 /** Morning / afternoon / evening, from the reader's own clock. */
 function greeting(date = new Date()) {
@@ -31,6 +31,14 @@ const CATEGORY_ICONS = {
   cbse: GraduationCap,
   test_series: ClipboardList,
 };
+
+/*
+ * Categories a teacher invented have no icon here and never will — the map is
+ * keyed by ids known at build time. Falling back to a generic tag keeps every
+ * chip the same height; without it a custom chip renders label-only and sits a
+ * few pixels shorter than the ones beside it.
+ */
+const categoryIcon = (id) => CATEGORY_ICONS[id] ?? Tag;
 
 /** How long each slide holds before the carousel advances. */
 const SLIDE_MS = 4500;
@@ -93,6 +101,23 @@ function Greeting({ name }) {
 
 /** Indexed by the `dow` the server sends, so 0 is Sunday. */
 const DOW_LETTERS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+/**
+ * Every category a class can be found under.
+ *
+ * The server sends `categories` — the class's own tag plus each published
+ * subject's — and `category`, the class's own. Preferring the array keeps a
+ * class on the NEET chip when it is the subjects inside it that are tagged
+ * NEET, which is how teachers actually tag things.
+ *
+ * The `category` fallback matters for the enrolled list, which comes from a
+ * different query that has no `categories` column. Without it, filtering by
+ * chip would empty the student's own courses entirely.
+ */
+function classCategories(c) {
+  if (Array.isArray(c?.categories)) return c.categories;
+  return c?.category ? [c.category] : [];
+}
+
 const DOW_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 /**
@@ -417,6 +442,16 @@ export default function StudentHomePage() {
    * is findable today.
    */
   const catalog = useMemo(() => data?.catalog ?? [], [data]);
+  /*
+   * The chip list, built-ins merged with whatever the school has added.
+   *
+   * Before the response arrives this is just the five shipped categories, so
+   * the bar draws immediately instead of flashing empty. A category a teacher
+   * invented only exists server-side, so without merging, a course tagged
+   * "Foundation" would sit under a chip that never renders — findable by
+   * search and by nothing else.
+   */
+  const categories = useMemo(() => mergeCategories(data?.categories), [data]);
   const streak = data?.streak ?? 0;
 
   /*
@@ -430,7 +465,18 @@ export default function StudentHomePage() {
    */
   const countByCategory = useMemo(() => {
     const n = {};
-    for (const c of catalog) if (c.category) n[c.category] = (n[c.category] ?? 0) + 1;
+    for (const c of catalog) {
+      /*
+       * Counted against `categories`, not `category`.
+       *
+       * A class carries its own tag plus every tag its subjects have, so a
+       * class can legitimately count under both NEET and JEE. Counting
+       * c.category alone would show "0" on a chip that the list below it
+       * visibly has classes under — the count and the list disagreeing is
+       * worse than having no count.
+       */
+      for (const cat of classCategories(c)) n[cat] = (n[cat] ?? 0) + 1;
+    }
     return n;
   }, [catalog]);
 
@@ -447,7 +493,7 @@ export default function StudentHomePage() {
 
   const matches = (c) => {
     const q = query.trim().toLowerCase();
-    if (activeCategory !== 'all' && c.category !== activeCategory) return false;
+    if (activeCategory !== 'all' && !classCategories(c).includes(activeCategory)) return false;
     if (!q) return true;
     return c.title?.toLowerCase().includes(q) || c.description?.toLowerCase().includes(q);
   };
@@ -577,10 +623,10 @@ export default function StudentHomePage() {
           active={activeCategory === 'all'}
           onClick={() => setCategory('all')}
         />
-        {COURSE_CATEGORIES.map((c) => (
+        {categories.map((c) => (
           <CategoryChip
             key={c.id}
-            icon={CATEGORY_ICONS[c.id]}
+            icon={categoryIcon(c.id)}
             label={c.label}
             count={countByCategory[c.id] ?? 0}
             active={activeCategory === c.id}
@@ -623,7 +669,7 @@ export default function StudentHomePage() {
               ? "You haven't joined any classes yet."
               : query.trim()
                 ? 'Nothing matches that search.'
-                : `No classes under ${categoryLabel(activeCategory)}.`}
+                : `No classes under ${categoryLabel(activeCategory, categories)}.`}
           </p>
           {/*
             Every empty state offers the way out of itself.
@@ -674,7 +720,7 @@ export default function StudentHomePage() {
             <h2 className="font-black text-sm md:text-lg uppercase">
               {activeCategory === 'all'
                 ? 'More courses'
-                : `More in ${categoryLabel(activeCategory)}`}
+                : `More in ${categoryLabel(activeCategory, categories)}`}
             </h2>
             <span className="text-[11px] font-bold text-gray-500">
               {available.length} available
@@ -725,10 +771,18 @@ function AvailableRow({ course, onOpen }) {
 
       <div className="min-w-0 flex-1">
         <h3 className="font-black text-sm leading-tight truncate">{course.title}</h3>
-        {/* Subjects carry their class name. Two courses called "Physics" under
-            different classes are otherwise indistinguishable in this list. */}
-        {course.parent_title && (
-          <p className="text-[10px] font-bold text-gray-500 truncate">in {course.parent_title}</p>
+        {/*
+          What is inside, since this row is now always a class.
+
+          The list used to show subjects alongside their classes, so each row
+          named its parent to tell two courses called "Physics" apart. Only
+          classes are listed now, so the useful fact is the opposite one: how
+          many subjects opening this will reveal.
+        */}
+        {course.subject_count > 0 && (
+          <p className="text-[10px] font-bold text-gray-500 truncate">
+            {course.subject_count} subject{course.subject_count === 1 ? '' : 's'} inside
+          </p>
         )}
         <div className="flex items-center gap-2.5 mt-0.5 text-[10px] font-bold text-gray-500">
           <span className="flex items-center gap-1">

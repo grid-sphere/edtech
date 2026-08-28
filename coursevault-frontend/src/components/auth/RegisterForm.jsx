@@ -145,8 +145,19 @@ export default function RegisterForm() {
     try {
       const data = await fetchAPI('/auth/request-signup-code', {
         method: 'POST',
-        body: JSON.stringify({ email: value }),
+        /*
+         * The role decides where the code is delivered. A teacher's goes to the
+         * school's administrator, not to this address, so the server has to
+         * know which kind of account is being asked for before it sends.
+         */
+        body: JSON.stringify({ email: value, role }),
       });
+      /*
+       * The server's message wins. It is the only side that knows the code went
+       * to an administrator rather than to the address on screen, and telling
+       * someone "we've sent a code to <your address>" when we have not leaves
+       * them watching an inbox forever.
+       */
       setCodeNotice(data?.message || `We've sent a code to ${value}.`);
       setCodeSent(true);
       setCooldown(45);
@@ -154,6 +165,25 @@ export default function RegisterForm() {
       setError(err.message || 'Could not send the code.');
     } finally {
       setCodeBusy(false);
+    }
+  };
+
+  /*
+   * Switching role throws away any code already confirmed.
+   *
+   * The proof is bound to the role it was earned for, so a student proof
+   * cannot create a teacher — the server refuses it. Clearing here means that
+   * refusal happens now, one field away from the fix, instead of after the
+   * whole form is filled in.
+   */
+  const changeRole = (next) => {
+    setRole(next);
+    if (emailToken || codeSent) {
+      setEmailToken('');
+      setVerifiedEmail('');
+      setCodeSent(false);
+      setEmailCode('');
+      setCodeNotice('');
     }
   };
 
@@ -241,12 +271,25 @@ export default function RegisterForm() {
             <Label>I am a</Label>
             <select
               value={role}
-              onChange={(e) => setRole(e.target.value)}
+              onChange={(e) => changeRole(e.target.value)}
               className={inputClass}
             >
               <option value="student">📚 Student - Looking to learn</option>
               <option value="educator">🎓 Educator - Want to teach</option>
             </select>
+            {/*
+              Said before they start, not after they finish. Someone applying to
+              teach should know an administrator is involved while they can
+              still change their mind, rather than discovering it on a code
+              screen watching an inbox nothing arrives in.
+            */}
+            {role === 'educator' && (
+              <p className="text-xs font-bold text-amber-800 bg-amber-50 border-2 border-amber-400 rounded-xl px-3 py-2 mt-2">
+                Teacher accounts need approval. The confirmation code goes to
+                your administrator, not to your inbox — ask them for it to
+                finish signing up.
+              </p>
+            )}
           </div>
 
           <div>

@@ -1,12 +1,16 @@
 /**
  * Course categories, mirroring backend/edtech/constants/courseCategories.js.
  *
- * Duplicated rather than fetched: the filter bar renders on first paint, and a
- * round trip for six fixed strings would leave it empty for a moment on every
- * load. The API validates against its own copy regardless, so the worst a
- * drift here can cause is a chip that saves nothing — not a bad write.
+ * The five built-ins are duplicated rather than fetched: the filter bar renders
+ * on first paint, and a round trip for five fixed strings would leave it empty
+ * for a moment on every load.
  *
- * The ids must match the backend exactly. If you add one, add it in both.
+ * Teachers can add their own, and those exist only in the database. So the
+ * built-ins are a starting point, not the whole list — anything that renders
+ * the bar should merge in what the API sent (`/home` and `/courses/categories`
+ * both return the full set) via `mergeCategories`.
+ *
+ * The ids must match the backend exactly. If you add a built-in, add it in both.
  */
 export const COURSE_CATEGORIES = [
   { id: 'hp_board', label: 'HP Board' },
@@ -16,8 +20,67 @@ export const COURSE_CATEGORIES = [
   { id: 'test_series', label: 'Test Series' },
 ];
 
-/** Label for a stored id, falling back to the raw value rather than blank. */
-export function categoryLabel(id) {
+/**
+ * Reduce a typed label to the id the server will store.
+ *
+ * Kept in step with slugifyCategory in the backend module of the same name.
+ * Duplicated for one reason: the teacher needs to be told what their category
+ * will be called *before* they save, and asking the server on every keystroke
+ * to answer a question that is pure string manipulation is not worth the
+ * round trip. The server slugifies again regardless, so a drift here shows up
+ * as a preview that differs from the result, never as a bad write.
+ */
+export function slugifyCategory(raw) {
+  return String(raw ?? '')
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 64)
+    .replace(/_+$/g, '');
+}
+
+/**
+ * The built-ins plus whatever the server sent, without duplicates.
+ *
+ * The server's ORDER IS THE ORDER. A teacher can rearrange the chips, and that
+ * arrangement lives in course_categories.sort_order — so sorting here, or
+ * forcing the shipped five to the front, would quietly override the thing they
+ * just dragged into place. An earlier version did exactly that and the reorder
+ * appeared to save and then do nothing.
+ *
+ * Built-ins the server did not mention are appended rather than dropped, so a
+ * partial or failed response degrades to "the five are still there, at the
+ * end" instead of chips vanishing.
+ */
+export function mergeCategories(fromServer) {
+  const server = Array.isArray(fromServer) ? fromServer.filter((c) => c?.id) : [];
+  if (server.length === 0) return COURSE_CATEGORIES.map((c) => ({ ...c }));
+
+  const out = [];
+  const seen = new Set();
+  for (const c of server) {
+    if (seen.has(c.id)) continue;
+    seen.add(c.id);
+    out.push({ id: c.id, label: c.label || c.id });
+  }
+  for (const c of COURSE_CATEGORIES) {
+    if (!seen.has(c.id)) out.push({ ...c });
+  }
+  return out;
+}
+
+/**
+ * Label for a stored id, falling back to the raw value rather than blank.
+ *
+ * `known` lets a caller pass the merged list so a custom category reads as
+ * "Foundation" rather than "foundation". Without it the fallback still shows
+ * the id, which is ugly but never blank — a course filed under a category
+ * nobody can see the name of is worse than a slug.
+ */
+export function categoryLabel(id, known = COURSE_CATEGORIES) {
   if (!id) return '';
-  return COURSE_CATEGORIES.find((c) => c.id === id)?.label ?? id;
+  return (known || COURSE_CATEGORIES).find((c) => c.id === id)?.label ?? id;
 }

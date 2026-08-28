@@ -8,6 +8,7 @@ import fs from "fs";
 // Import routes
 import authRoutes from "./routes/auth.js";
 import courseRoutes from "./routes/courses.js";
+import { BUILTIN_COURSE_CATEGORIES } from "./constants/courseCategories.js";
 import moduleRoutes from "./routes/modules.js";
 import contentRoutes, { recoverInterruptedJobs } from "./routes/content.js";
 import paymentRoutes from "./routes/payments.js";
@@ -428,6 +429,68 @@ async function setupDatabase() {
         await pool.query(`ALTER TABLE courses ADD COLUMN IF NOT EXISTS category VARCHAR(64) DEFAULT NULL`);
 
         /*
+         * The categories themselves, so teachers can add their own.
+         *
+         * The five built-ins used to be a hardcoded list in two files. That is
+         * fine until a school needs "Rajasthan Board" or "Foundation" — then
+         * adding one means a code change and a deploy.
+         *
+         * A table rather than free text on the course. The id is a slug, so
+         * "HP Board", "HP board" and "hp  board" all collapse to hp_board
+         * instead of becoming three chips that each hide two thirds of the
+         * courses. The label is stored once here rather than per course, so
+         * two courses cannot disagree about how the same category is spelled.
+         *
+         * No foreign key from courses.category. Existing rows hold ids that
+         * predate this table, and a constraint would reject them at migration
+         * time — a chip pointing at a deleted category is a cosmetic problem,
+         * a failed boot is not.
+         */
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS course_categories (
+                id VARCHAR(64) PRIMARY KEY,
+                label VARCHAR(64) NOT NULL,
+                -- Built-ins cannot be renamed or removed by a teacher: the
+                -- frontend ships them for first paint, so a renamed one would
+                -- read differently before and after the page finished loading.
+                is_builtin BOOLEAN NOT NULL DEFAULT FALSE,
+                created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+
+        /*
+         * Seeded idempotently. ON CONFLICT DO UPDATE rather than DO NOTHING so
+         * a corrected built-in label reaches an existing database, which
+         * DO NOTHING would silently skip.
+         */
+        /*
+         * The order the chips appear in, which a teacher can change.
+         *
+         * Seeded from the shipped array's own order so an existing database
+         * keeps the arrangement it already had, rather than jumping to
+         * alphabetical the moment this column appears.
+         */
+        await pool.query(`ALTER TABLE course_categories ADD COLUMN IF NOT EXISTS sort_order INT`);
+        await pool.query(`
+            UPDATE course_categories SET sort_order = 1000
+             WHERE sort_order IS NULL AND is_builtin = FALSE
+        `);
+
+        for (const c of BUILTIN_COURSE_CATEGORIES) {
+            /*
+             * sort_order is set on insert only, never on conflict: re-seeding
+             * on every boot would undo a teacher's arrangement each restart.
+             */
+            await pool.query(
+                `INSERT INTO course_categories (id, label, is_builtin, sort_order)
+                      VALUES ($1, $2, TRUE, $3)
+                 ON CONFLICT (id) DO UPDATE SET label = EXCLUDED.label, is_builtin = TRUE`,
+                [c.id, c.label, BUILTIN_COURSE_CATEGORIES.indexOf(c)]
+            );
+        }
+
+        /*
          * Personal appearance override.
          *
          * All four are nullable, and null is meaningful: it means "follow
@@ -562,6 +625,20 @@ async function setupDatabase() {
             CREATE INDEX IF NOT EXISTS idx_signup_email_verifications_email
                 ON signup_email_verifications(email, created_at DESC)
         `);
+        /*
+         * Which kind of account the code was requested for.
+         *
+         * Bound to the row, not just the request, because the proof handed out
+         * on success carries it. Without that, someone could confirm a student
+         * code for their own address and then post it to /register asking for
+         * an educator account — the proof would be perfectly valid, and the
+         * approval step would be decoration.
+         */
+        await pool.query(
+            `ALTER TABLE signup_email_verifications
+             ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'student'`
+        );
+
 
         await pool.query(`DELETE FROM signup_email_verifications WHERE created_at < NOW() - INTERVAL '2 days'`);
 

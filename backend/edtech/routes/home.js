@@ -10,6 +10,7 @@ import express from "express";
 import pool from "../config/database.js";
 import { authOnly as authMiddleware } from "../middleware/auth.js";
 import { activeEnrolmentSql } from "../utils/enrollmentAccess.js";
+import { listCategories } from "../constants/courseCategories.js";
 import { APP_TIMEZONE, todayInAppZone, dayToUtcMs, DAY_MS } from "../utils/appTime.js";
 
 const router = express.Router();
@@ -239,34 +240,60 @@ router.get("/", authMiddleware, async (req, res) => {
                   WHERE m.course_id = c.id AND m.is_active = true) AS module_count,
                 (SELECT COUNT(DISTINCT e2.user_id)::int FROM enrollments e2
                   WHERE e2.course_id = c.id AND e2.status = 'active') AS student_count,
-                parent.title AS parent_title,
+                /*
+                 * How many subjects sit inside this class, so the card can say
+                 * so. It is the reason a student would open it.
+                 */
+                (SELECT COUNT(*)::int FROM courses s
+                  WHERE s.parent_course_id = c.id
+                    AND s.is_active = true AND s.status = 'published') AS subject_count,
+                /*
+                 * Every category this class can be found under: its own, plus
+                 * every published subject's.
+                 *
+                 * A class is what a student browses, but a teacher may well
+                 * have tagged the subjects instead — a "Class 12" class whose
+                 * Physics and Chemistry subjects are tagged NEET. Matching on
+                 * c.category alone would drop that class off the NEET chip
+                 * even though everything inside it is NEET material.
+                 *
+                 * NULLs are filtered out, so an untagged class yields an empty
+                 * array rather than [null], which would otherwise count as a
+                 * category and match nothing.
+                 */
+                ARRAY(
+                    SELECT DISTINCT cat FROM (
+                        SELECT c.category AS cat
+                        UNION ALL
+                        SELECT s.category FROM courses s
+                         WHERE s.parent_course_id = c.id
+                           AND s.is_active = true AND s.status = 'published'
+                    ) t WHERE cat IS NOT NULL
+                ) AS categories,
                 EXISTS (
                     SELECT 1 FROM enrollments e
                      WHERE e.course_id = c.id AND e.user_id = $1
                        AND ${activeEnrolmentSql('e')}
                 ) AS enrolled
               FROM courses c
-              LEFT JOIN courses parent ON parent.id = c.parent_course_id
              WHERE c.is_active = true
                AND c.status = 'published'
                /*
-                * Subjects are included, not just top-level classes.
+                * Classes only. Subjects live inside a class and are reached by
+                * opening it.
                 *
-                * This app nests Class -> Subject, and a teacher can set a
-                * category on either. Restricting to parent_course_id IS NULL
-                * meant tagging a subject "NEET" did nothing at all: the value
-                * saved, and the course appeared under no chip. Tagging
-                * something and having it vanish is worse than not offering
-                * the field.
+                * An earlier version listed subjects here too, so that tagging a
+                * subject "NEET" had a visible effect. That fixed the tag but
+                * broke the browsing model: a student saw "Class 12", "Physics"
+                * and "Chemistry" as three sibling entries with no indication
+                * that the last two were inside the first. The categories array
+                * above keeps subject tags working without flattening the
+                * hierarchy to do it.
                 *
-                * A subject only appears if its parent is published and active
-                * too. Otherwise a subject inside an unpublished class would
-                * leak out on its own, which is the opposite mistake.
+                * (No backticks in this comment: it lives inside a JS template
+                * literal, and one would end the string mid-query.)
                 */
-               AND (
-                   c.parent_course_id IS NULL
-                   OR (parent.status = 'published' AND parent.is_active = true)
-               )
+               AND c.parent_course_id IS NULL
              ORDER BY c.created_at DESC
         `, [userId]);
 
@@ -278,8 +305,19 @@ router.get("/", authMiddleware, async (req, res) => {
          */
         const today = todayInAppZone();
 
+        /*
+         * The chip list travels with the page.
+         *
+         * The frontend ships the five built-ins so the bar can render on first
+         * paint, but a category a teacher invented exists only here. Without
+         * this, tagging a course "Foundation" would file it under a chip that
+         * never appears and the course would vanish from every filter.
+         */
+        const categories = await listCategories(pool);
+
         res.json({
             success: true,
+            categories,
             streak: streakFromDays(days, today),
             activeDays: days.length,
             recentDays: lastSevenDays(days, today),

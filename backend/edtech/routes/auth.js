@@ -331,6 +331,24 @@ router.post("/verify-email", authMiddleware, async (req, res) => {
 const SIGNUP_PROOF_SCOPE = "signup-email-verified";
 
 /**
+ * Where a teacher-account code is sent.
+ *
+ * Not to the person signing up — to whoever approves teachers. Creating a
+ * teacher account grants the ability to publish courses to every student on
+ * the platform, and until now anyone could self-register as one by choosing
+ * "educator" in a dropdown. Routing the code to an address only the school
+ * controls turns that dropdown into a request rather than a grant.
+ *
+ * Overridable so a different school can point it at their own inbox without a
+ * code change.
+ */
+const TEACHER_APPROVER_EMAIL =
+    (process.env.TEACHER_APPROVER_EMAIL || "gridsphere75@gmail.com").trim().toLowerCase();
+
+/** The account kinds signup may ask for. */
+const SIGNUP_ROLES = ["student", "educator"];
+
+/**
  * How long the proof lasts.
  *
  * Long enough to finish the rest of the form without hurrying, short enough
@@ -361,6 +379,22 @@ router.post("/request-signup-code", async (req, res) => {
             return res.status(400).json({ error: "Enter a valid email address." });
         }
         const email = check.email;
+
+        const role = req.body.role ?? "student";
+        if (!SIGNUP_ROLES.includes(role)) {
+            return res.status(400).json({ error: "role must be student or educator" });
+        }
+
+        /*
+         * A teacher's code goes to the approver, never to the applicant.
+         *
+         * The address they typed is still the one the account will be created
+         * on and still the one the rate limit counts against — only the
+         * delivery target changes. So an applicant proves nothing by owning
+         * their own inbox; they need someone at the school to read the code out.
+         */
+        const isTeacherRequest = role === "educator";
+        const sendTo = isTeacherRequest ? TEACHER_APPROVER_EMAIL : email;
 
         const taken = await pool.query(`SELECT 1 FROM users WHERE email = $1`, [email]);
         if (taken.rows.length > 0) {
@@ -397,13 +431,33 @@ router.post("/request-signup-code", async (req, res) => {
         const codeHash = await bcrypt.hash(code, 10);
 
         await pool.query(
-            `INSERT INTO signup_email_verifications (email, code_hash, expires_at)
-             VALUES ($1, $2, NOW() + ($3 || ' minutes')::interval)`,
-            [email, codeHash, String(SIGNUP_CODE_TTL_MINUTES)]
+            /*
+             * The role is stored on the row, not merely honoured in this
+             * request. verify-signup-code reads it back and bakes it into the
+             * proof, which is what stops a student code being redeemed for a
+             * teacher account.
+             */
+            `INSERT INTO signup_email_verifications (email, code_hash, expires_at, role)
+             VALUES ($1, $2, NOW() + ($3 || ' minutes')::interval, $4)`,
+            [email, codeHash, String(SIGNUP_CODE_TTL_MINUTES), role]
         );
 
         const mail = verifyEmailMessage({ name: null, code, minutes: SIGNUP_CODE_TTL_MINUTES });
-        const sent = await sendMail({ to: email, ...mail });
+        const sent = await sendMail({
+            to: sendTo,
+            ...mail,
+            // The approver needs to know who they are approving; the code alone
+            // says nothing about which application it belongs to.
+            ...(isTeacherRequest
+                ? {
+                      subject: `Teacher account request: ${email}`,
+                      text: `${email} has asked for a teacher account.\n\n` +
+                          `Approval code: ${code}\n\n` +
+                          `It expires in ${SIGNUP_CODE_TTL_MINUTES} minutes. ` +
+                          `Give it to them only if they should be able to publish courses.`,
+                  }
+                : {}),
+        });
 
         if (!sent.ok) {
             // Said plainly. The person is mid-signup and can do nothing about a
@@ -414,7 +468,20 @@ router.post("/request-signup-code", async (req, res) => {
             });
         }
 
-        res.json({ success: true, message: `We've sent a code to ${email}.` });
+        /*
+         * The applicant is told the code went elsewhere.
+         *
+         * Saying "we've sent a code to <their address>" would strand them
+         * watching an inbox nothing is coming to. The approver's address is not
+         * revealed — that is the school's business, not an applicant's.
+         */
+        res.json({
+            success: true,
+            approvalRequired: isTeacherRequest,
+            message: isTeacherRequest
+                ? "Teacher accounts need approval. We've sent a code to your administrator — ask them for it to finish signing up."
+                : `We've sent a code to ${email}.`,
+        });
     } catch (err) {
         console.error("Request signup code error:", err);
         res.status(500).json({ error: "Could not send the code. Please try again." });
@@ -440,7 +507,7 @@ router.post("/verify-signup-code", async (req, res) => {
         const email = check.email;
 
         const { rows } = await pool.query(
-            `SELECT id, code_hash, attempts FROM signup_email_verifications
+            `SELECT id, code_hash, attempts, role FROM signup_email_verifications
               WHERE email = $1 AND consumed_at IS NULL AND expires_at > NOW()
               ORDER BY created_at DESC LIMIT 1`,
             [email]
@@ -486,8 +553,20 @@ router.post("/verify-signup-code", async (req, res) => {
          * another — which would let someone confirm an address they own and
          * then sign up as anyone.
          */
+        /*
+         * The role travels with the proof, alongside the email.
+         *
+         * Without it the approval gate is decoration: anyone could request a
+         * student code for an address they own, read it from their own inbox,
+         * and post the resulting proof to /register asking for an educator
+         * account. The proof would be entirely valid — it just would not say
+         * what it was earned for.
+         *
+         * Read from the stored row rather than from this request, so the claim
+         * reflects the code that was actually sent and to whom.
+         */
         const proof = jwt.sign(
-            { email, scope: SIGNUP_PROOF_SCOPE },
+            { email, role: row.role || "student", scope: SIGNUP_PROOF_SCOPE },
             JWT_SECRET,
             { expiresIn: SIGNUP_PROOF_TTL }
         );
@@ -504,7 +583,7 @@ router.post("/verify-signup-code", async (req, res) => {
  *
  * @returns {{ok: true} | {ok: false, error: string}}
  */
-function checkSignupProof(token, email) {
+function checkSignupProof(token, email, role) {
     if (!token) {
         return { ok: false, error: "Please confirm your email address before creating an account." };
     }
@@ -519,6 +598,25 @@ function checkSignupProof(token, email) {
     }
     if (String(decoded.email).toLowerCase() !== String(email).toLowerCase()) {
         return { ok: false, error: "That confirmation was for a different email address." };
+    }
+    /*
+     * And for the kind of account it was earned for.
+     *
+     * A proof from a student code cannot create a teacher. Without this the
+     * approval step is bypassed by anyone who reads their own inbox and then
+     * changes one field in the request — the very thing routing the teacher
+     * code to an administrator was meant to prevent.
+     *
+     * Defaulted to "student" so proofs minted before the role claim existed
+     * still create student accounts rather than being refused outright.
+     */
+    if ((decoded.role || "student") !== role) {
+        return {
+            ok: false,
+            error: role === "educator"
+                ? "Teacher accounts need an approval code from your administrator."
+                : "That confirmation was for a different kind of account.",
+        };
     }
     return { ok: true };
 }
@@ -573,7 +671,7 @@ router.post("/register", async (req, res) => {
          * only in the UI: without this check the whole step is a suggestion,
          * and anyone posting straight to the API skips it.
          */
-        const proof = checkSignupProof(req.body.emailVerifiedToken, emailCheck.email);
+        const proof = checkSignupProof(req.body.emailVerifiedToken, emailCheck.email, role);
         if (!proof.ok) return res.status(400).json({ error: proof.error });
 
         /*
