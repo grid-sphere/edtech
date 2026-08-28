@@ -225,8 +225,17 @@ export default function ExplorePage() {
                     <span className="md:hidden text-lg leading-none">←</span>
                     <span className="hidden md:inline">← Back to All Classes</span>
                   </button>
+                  {/*
+                    The fallback matters now that the home screen links
+                    straight here. A bookmark to a class that has since been
+                    unpublished leaves selectedParentCourse undefined, and the
+                    heading rendered as a lone " Subjects" with a dangling
+                    space where the name should be.
+                  */}
                   <h2 className="text-2xl md:text-3xl font-black">
-                    {selectedParentCourse?.title} Subjects
+                    {selectedParentCourse?.title
+                      ? `${selectedParentCourse.title} Subjects`
+                      : 'Subjects'}
                   </h2>
                 </div>
 
@@ -234,7 +243,9 @@ export default function ExplorePage() {
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-8 gap-y-3 md:gap-y-16 items-start">
                   {childCourses.length === 0 ? (
                     <div className="col-span-full bg-white border-2 border-dashed border-black rounded-xl p-12 text-center text-gray-500 font-bold text-lg shadow-[4px_4px_0px_0px_#111]">
-                      No subjects published in this class yet.
+                      {selectedParentCourse
+                        ? 'No subjects published in this class yet.'
+                        : 'That class is no longer available.'}
                     </div>
                   ) : (
                     childCourses.map((child, i) => (

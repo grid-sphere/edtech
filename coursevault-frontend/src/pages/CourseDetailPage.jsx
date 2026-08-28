@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Play, Plus, Edit, Trash2, Users, Infinity as InfinityIcon } from 'lucide-react';
 import Badge from '../components/ui/Badge.jsx';
 import CourseAccordion from '../components/course/CourseAccordion.jsx';
+import CourseCard from '../components/course/CourseCard.jsx';
 import MediaViewerModal from '../components/course/MediaViewerModal.jsx';
 import CourseModal from '../components/educator/CourseModal.jsx';
 import ModuleModal from '../components/educator/ModuleModal.jsx';
@@ -30,6 +31,7 @@ export default function CourseDetailPage() {
 
   const [course, setCourse] = useState(null);
   const [modules, setModules] = useState([]);
+  const [subjects, setSubjects] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isEnrolling, setIsEnrolling] = useState(false);
   const [isEnrolled, setIsEnrolled] = useState(false);
@@ -71,6 +73,7 @@ export default function CourseDetailPage() {
       const data = await fetchAPI(`/courses/${id}`);
       setCourse(data.course);
       setModules(data.modules || []);
+      setSubjects(data.subjects || []);
 
       // Modules start collapsed. Auto-opening the first one pushed the rest of
       // the curriculum off the screen before the student had seen what the
@@ -423,7 +426,54 @@ export default function CourseDetailPage() {
         );
       })()}
 
-      <div className="flex items-center justify-between mb-4 md:mb-8 gap-3 md:gap-6">
+      {/* ------------------------------------------------------------ subjects
+
+          A class holds no material of its own — it holds subjects, and the
+          material is in those. So this is the whole page for a class, and the
+          curriculum below it renders nothing.
+
+          Before this existed, tapping a class landed on an empty "Curriculum"
+          heading with nothing under it, from home, My Learning and every
+          notification alike. The class looked broken rather than full.       */}
+      {subjects.length > 0 && (
+        <div className="mb-8 md:mb-12">
+          <div className="flex items-baseline justify-between gap-3 mb-4 md:mb-6">
+            <h2 className="text-2xl md:text-3xl font-black shrink-0">Subjects</h2>
+            <span className="text-xs font-bold uppercase tracking-widest text-gray-500">
+              {subjects.length} in this class
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6 items-start">
+            {subjects.map((s, i) => (
+              <CourseCard
+                key={s.id}
+                course={s}
+                index={i}
+                isMyLearning={false}
+                /*
+                 * Straight to the subject's own page, which is where its
+                 * modules live. The same component the Explore grid uses, so a
+                 * subject looks the same wherever a student meets it.
+                 */
+                onClick={() => navigate(`/course/${s.id}`)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/*
+        Hidden for a class with subjects.
+
+        A class has no modules, so the heading would stand alone above nothing
+        — and next to a populated Subjects grid it reads as a section that
+        failed to load rather than one that was never meant to have content.
+        A subject, and a class that holds material directly, both still show it.
+      */}
+      <div className={`flex items-center justify-between mb-4 md:mb-8 gap-3 md:gap-6 ${
+        subjects.length > 0 && modules.length === 0 ? 'hidden' : ''
+      }`}>
         <h2 className="text-2xl md:text-3xl font-black shrink-0">Curriculum</h2>
 
         {isEnrolled && !isCreator && (

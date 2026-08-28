@@ -414,6 +414,46 @@ router.get("/:id", async (req, res) => {
             return res.status(404).json({ error: "Course not found" });
         }
 
+        /*
+         * The subjects inside this class.
+         *
+         * A class holds no modules of its own — the material lives in its
+         * subjects — so a class page built only from `modules` renders an
+         * empty curriculum and a student who taps a class reaches a dead end.
+         * That was true from every route into this page, not just the home
+         * screen.
+         *
+         * Empty for a subject, which has no children, so the client can simply
+         * ask whether the array has anything in it rather than reasoning about
+         * parent_course_id.
+         */
+        const subjectsResult = await pool.query(`
+            SELECT
+                s.id,
+                s.title,
+                s.description,
+                s.thumbnail_url,
+                s.price,
+                s.category,
+                (SELECT COUNT(*)::int FROM modules m
+                  WHERE m.course_id = s.id AND m.is_active = true) AS module_count,
+                (SELECT COUNT(*)::int
+                   FROM content_items ci
+                   JOIN modules m ON ci.id = ANY(m.content_ids)
+                  WHERE m.course_id = s.id AND ci.is_active = true
+                    AND ci.content_type = 'video' AND ci.status = 'ready') AS video_count
+              FROM courses s
+             WHERE s.parent_course_id = $1
+               AND s.is_active = true
+               /*
+                * Published only, with one exception: the educator who owns the
+                * class needs to see their own drafts here, or a subject they
+                * are still building looks like it was never created.
+                */
+               AND (s.status = 'published' OR $2::boolean)
+             ORDER BY s.display_order ASC NULLS LAST, s.created_at ASC
+        `, [id, isCreator]);
+
         const modulesResult = await pool.query(`
             SELECT * FROM modules
             WHERE course_id = $1 AND is_active = true
@@ -471,7 +511,10 @@ router.get("/:id", async (req, res) => {
                 isEnrolled,
                 isCreator
             },
-            modules
+            modules,
+            // Always an array. A client that has to distinguish "no subjects"
+            // from "this key is missing" will eventually get it wrong.
+            subjects: subjectsResult.rows,
         });
     } catch (err) {
         console.error("Course fetch error:", err);
