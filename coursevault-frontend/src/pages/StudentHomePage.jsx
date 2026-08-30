@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Flame, Check, LayoutGrid, ChevronLeft, ChevronRight, Stethoscope,
   Compass, GraduationCap, ClipboardList,
-  BookOpen, Users, ChevronDown, ArrowRight, Loader, Tag,
+  BookOpen, Users, ArrowRight, Loader, Tag,
 } from 'lucide-react';
 import { fetchAPI, resolveMediaUrl } from '../services/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -41,73 +41,17 @@ const CATEGORY_ICONS = {
 const categoryIcon = (id) => CATEGORY_ICONS[id] ?? Tag;
 
 /**
- * The subjects inside one class, shown in place.
+ * Where tapping a class on this page goes.
  *
- * Tapping a class used to navigate — first to the class page, then into
- * Explore. Both took the reader off the screen they were reading to answer
- * "what is in this?", which is a question a list should be able to answer
- * without moving.
+ * Into Explore's view for that class — "9th Class (HPBOSE)" with its subjects
+ * laid out beneath it. Explore already reads `?class=` and renders exactly
+ * that, so this reuses the grid students already know rather than keeping a
+ * second copy of it here that would drift.
  *
- * Loaded when first opened rather than with the page. A student has one or two
- * classes they care about; fetching the subjects of every class on the home
- * screen would pay for a dozen lists to show one.
+ * Every row on this page is a class: the catalogue is restricted to top-level
+ * courses, so this never sends a subject somewhere it does not belong.
  */
-function SubjectList({ state, onOpenSubject }) {
-  if (state?.loading) {
-    return (
-      <div className="flex items-center gap-2 px-3 py-3 text-xs font-bold text-gray-500">
-        <Loader size={14} className="animate-spin" /> Loading subjects...
-      </div>
-    );
-  }
-
-  if (state?.error) {
-    return (
-      <p className="px-3 py-3 text-xs font-bold text-red-700">{state.error}</p>
-    );
-  }
-
-  const subjects = state?.items ?? [];
-  if (subjects.length === 0) {
-    return (
-      <p className="px-3 py-3 text-xs font-bold text-gray-500">
-        No subjects in this class yet.
-      </p>
-    );
-  }
-
-  return (
-    <ul className="flex flex-col gap-1.5 p-2 list-none m-0">
-      {subjects.map((s) => (
-        <li key={s.id}>
-          <button
-            type="button"
-            onClick={() => onOpenSubject(s.id)}
-            className="w-full flex items-center gap-2.5 p-2 rounded-lg border-2 border-black/15
-                       bg-white hover:border-black hover:bg-[#F9E076]/40 transition-colors text-left"
-          >
-            <div className="shrink-0 w-9 h-9 rounded-md border-2 border-black/20 overflow-hidden bg-[#F4DFD8] flex items-center justify-center">
-              {s.thumbnail_url ? (
-                <img src={resolveMediaUrl(s.thumbnail_url)} alt="" className="w-full h-full object-cover" />
-              ) : (
-                <BookOpen size={14} strokeWidth={2.5} className="text-black/40" />
-              )}
-            </div>
-
-            <div className="min-w-0 flex-1">
-              <p className="font-bold text-xs leading-tight truncate">{s.title}</p>
-              <p className="text-[10px] font-bold text-gray-500 mt-0.5">
-                {s.video_count ?? 0} video{(s.video_count ?? 0) === 1 ? '' : 's'}
-              </p>
-            </div>
-
-            <ArrowRight size={13} strokeWidth={3} className="shrink-0 text-gray-400" />
-          </button>
-        </li>
-      ))}
-    </ul>
-  );
-}
+const classHref = (id) => `/explore?class=${encodeURIComponent(id)}`;
 
 /** How long each slide holds before the carousel advances. */
 const SLIDE_MS = 4500;
@@ -486,44 +430,6 @@ export default function StudentHomePage() {
   }, [searchParams, setSearchParams]);
   const [category, setCategory] = useState('all');
 
-  /*
-   * Which class is open, and the subjects behind it.
-   *
-   * One at a time. Several open at once turns the home screen into a wall of
-   * nested lists on a phone, and the reader loses the class they were actually
-   * looking at.
-   */
-  const [openClassId, setOpenClassId] = useState(null);
-  const [subjectsByClass, setSubjectsByClass] = useState({});
-
-  /*
-   * Fetched once per class and kept.
-   *
-   * Re-fetching on every open would make the second tap of a class flash a
-   * spinner over a list the reader has already seen — the page appearing to
-   * lose data it plainly had a moment ago.
-   */
-  const toggleClass = useCallback(async (id) => {
-    const closing = openClassId === id;
-    setOpenClassId(closing ? null : id);
-    if (closing || subjectsByClass[id]) return;
-
-    setSubjectsByClass((prev) => ({ ...prev, [id]: { loading: true } }));
-    try {
-      const res = await fetchAPI(`/courses/${encodeURIComponent(id)}`);
-      setSubjectsByClass((prev) => ({ ...prev, [id]: { items: res?.subjects ?? [] } }));
-    } catch (err) {
-      /*
-       * Kept as an error rather than an empty list. "No subjects in this class
-       * yet" would be a confident lie about a request that never came back.
-       */
-      setSubjectsByClass((prev) => ({
-        ...prev,
-        [id]: { error: err.message || 'Could not load the subjects.' },
-      }));
-    }
-  }, [openClassId, subjectsByClass]);
-
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -684,13 +590,7 @@ export default function StudentHomePage() {
            * page lists its subjects whether or not you are enrolled, so it is
            * the right destination either way.
            */
-          /*
-           * The carousel still navigates. It is a single banner with no list
-           * beneath it to expand into, and pushing a subject list under one
-           * slide would shove the rest of the page down every time it
-           * advanced.
-           */
-          onOpen={(s) => navigate(`/course/${s.id}`)}
+          onOpen={(s) => navigate(classHref(s.id))}
         />
       ) : (
         <div className="relative overflow-hidden rounded-xl border-2 border-black bg-[#932973] text-white p-4 md:p-5 mb-3 shadow-[3px_3px_0px_0px_#111]">
@@ -821,21 +721,7 @@ export default function StudentHomePage() {
       ) : (
         <div className="flex flex-col gap-2">
           {filtered.map((c) => (
-            <div key={c.id}>
-              <CourseRow
-                course={c}
-                expanded={openClassId === c.id}
-                onOpen={() => toggleClass(c.id)}
-              />
-              {openClassId === c.id && (
-                <div className="mt-1 ml-3 border-l-2 border-black/15 pl-2">
-                  <SubjectList
-                    state={subjectsByClass[c.id]}
-                    onOpenSubject={(sid) => navigate(`/course/${sid}`)}
-                  />
-                </div>
-              )}
-            </div>
+            <CourseRow key={c.id} course={c} onOpen={() => navigate(classHref(c.id))} />
           ))}
         </div>
       )}
@@ -864,21 +750,11 @@ export default function StudentHomePage() {
 
           <div className="flex flex-col gap-2">
             {available.map((c) => (
-              <div key={c.id}>
-                <AvailableRow
-                  course={c}
-                  expanded={openClassId === c.id}
-                  onOpen={() => toggleClass(c.id)}
-                />
-                {openClassId === c.id && (
-                  <div className="mt-1 ml-3 border-l-2 border-black/15 pl-2">
-                    <SubjectList
-                      state={subjectsByClass[c.id]}
-                      onOpenSubject={(sid) => navigate(`/course/${sid}`)}
-                    />
-                  </div>
-                )}
-              </div>
+              <AvailableRow
+                key={c.id}
+                course={c}
+                onOpen={() => navigate(classHref(c.id))}
+              />
             ))}
           </div>
         </div>
@@ -895,14 +771,13 @@ export default function StudentHomePage() {
  * rather than as an invitation. The play button becomes an arrow for the same
  * reason — play implies resuming.
  */
-function AvailableRow({ course, onOpen, expanded = false }) {
+function AvailableRow({ course, onOpen }) {
   const free = !course.price || Number(course.price) === 0;
 
   return (
     <div
       role="button"
       tabIndex={0}
-      aria-expanded={expanded}
       onClick={onOpen}
       onKeyDown={(e) => e.key === 'Enter' && onOpen()}
       className="flex gap-2.5 p-2 rounded-xl border-2 border-black bg-white/70 shadow-[2px_2px_0px_0px_#111] cursor-pointer hover:bg-white hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[1px_1px_0px_0px_#111] transition-all"
@@ -945,23 +820,14 @@ function AvailableRow({ course, onOpen, expanded = false }) {
         </div>
       </div>
 
-      {/*
-        A chevron, not an arrow. An arrow promises a new screen; this opens the
-        subjects underneath, and the icon is the only thing saying which of the
-        two is about to happen.
-      */}
       <div className="shrink-0 self-center w-8 h-8 rounded-full border-2 border-black bg-white flex items-center justify-center shadow-[2px_2px_0px_0px_#111]">
-        <ChevronDown
-          size={15}
-          strokeWidth={3}
-          className={`transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
-        />
+        <ArrowRight size={14} strokeWidth={3} />
       </div>
     </div>
   );
 }
 
-function CourseRow({ course, onOpen, expanded = false }) {
+function CourseRow({ course, onOpen }) {
   /*
    * Progress against videos, matching what the backend counts.
    *
@@ -977,7 +843,6 @@ function CourseRow({ course, onOpen, expanded = false }) {
     <div
       role="button"
       tabIndex={0}
-      aria-expanded={expanded}
       onClick={onOpen}
       onKeyDown={(e) => e.key === 'Enter' && onOpen()}
       className="flex gap-2.5 p-2 rounded-xl border-2 border-black bg-white shadow-[2px_2px_0px_0px_#111] cursor-pointer hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[1px_1px_0px_0px_#111] transition-all"
@@ -1022,16 +887,12 @@ function CourseRow({ course, onOpen, expanded = false }) {
       </div>
 
       {/*
-        The play triangle promised the lesson itself. It opens the subject list
-        instead, so it is a chevron — the same one the row below the fold uses,
-        because the two behave identically.
+        An arrow, not a play triangle. Opening a class leads to its subjects,
+        not to a video — the icon is the only thing telling the reader which of
+        the two is about to happen.
       */}
       <div className="shrink-0 self-center w-8 h-8 rounded-full border-2 border-black bg-[#F26B4D] text-white flex items-center justify-center shadow-[2px_2px_0px_0px_#111]">
-        <ChevronDown
-          size={15}
-          strokeWidth={3}
-          className={`transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
-        />
+        <ArrowRight size={14} strokeWidth={3} />
       </div>
     </div>
   );
