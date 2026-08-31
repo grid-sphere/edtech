@@ -3,9 +3,13 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Bot, Microscope, Search, X } from 'lucide-react';
 import CourseCard from '../components/course/CourseCard';
 import { fetchAPI } from '../services/api';
+import { useAuth } from '../context/AuthContext.jsx';
 
 export default function ExplorePage() {
   const navigate = useNavigate();
+  // Read only, to decide where "back" goes: students came from Home, and the
+  // Explore tab they would otherwise land on is hidden.
+  const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const [courses, setCourses] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -218,12 +222,30 @@ export default function ExplorePage() {
 
                 {/* Navigation Header */}
                 <div className="flex items-center gap-3 mb-4 md:mb-8">
+                  {/*
+                    Back goes home, not to the class list behind this view.
+
+                    Students reach this page from a class card on the home
+                    screen, and the Explore tab is hidden — so "All Classes"
+                    would strand them on a page with no way onward that they
+                    were never meant to be browsing. Home is where they came
+                    from and where the classes are.
+
+                    Educators, who have no home screen, keep the old behaviour.
+                  */}
                   <button 
-                    onClick={() => setSearchParams({})}
+                    onClick={() => {
+                      if (user?.role === 'educator' || user?.role === 'admin') setSearchParams({});
+                      else navigate('/home');
+                    }}
                     className="flex-shrink-0 flex items-center justify-center w-9 h-9 md:w-auto md:h-auto md:px-4 md:py-2 bg-white border-2 border-black rounded-full md:rounded-lg font-bold hover:bg-[#F9E076] transition-colors shadow-[2px_2px_0px_0px_#111]"
                   >
                     <span className="md:hidden text-lg leading-none">←</span>
-                    <span className="hidden md:inline">← Back to All Classes</span>
+                    <span className="hidden md:inline">
+                      {user?.role === 'educator' || user?.role === 'admin'
+                        ? '← Back to All Classes'
+                        : '← Back to Home'}
+                    </span>
                   </button>
                   {/*
                     The fallback matters now that the home screen links

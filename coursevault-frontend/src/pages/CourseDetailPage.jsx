@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { Play, Plus, Edit, Trash2, Users, Infinity as InfinityIcon } from 'lucide-react';
 import Badge from '../components/ui/Badge.jsx';
 import CourseAccordion from '../components/course/CourseAccordion.jsx';
@@ -32,6 +32,15 @@ export default function CourseDetailPage() {
   const [course, setCourse] = useState(null);
   const [modules, setModules] = useState([]);
   const [subjects, setSubjects] = useState([]);
+  const [searchParams, setSearchParams] = useSearchParams();
+  /*
+   * Set once from `?payment=` and then cleared from the URL.
+   *
+   * PayU returns the student here with the outcome in the query string. If it
+   * stayed there, a refresh — or a bookmark — would re-announce a payment that
+   * happened days ago.
+   */
+  const [paymentNotice, setPaymentNotice] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isEnrolling, setIsEnrolling] = useState(false);
   const [isEnrolled, setIsEnrolled] = useState(false);
@@ -67,6 +76,15 @@ export default function CourseDetailPage() {
    *   dropped) but must not blank the page behind a spinner on every click,
    *   which looked exactly like the page reloading.
    */
+  useEffect(() => {
+    const outcome = searchParams.get('payment');
+    if (!outcome) return;
+    setPaymentNotice(outcome === 'success' ? 'success' : 'failed');
+    const next = new URLSearchParams(searchParams);
+    next.delete('payment');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+
   const loadCourseData = async ({ silent = false } = {}) => {
     if (!silent) setIsLoading(true);
     try {
@@ -181,6 +199,36 @@ export default function CourseDetailPage() {
         return;
       }
 
+      /*
+       * PayU is a redirect, not a modal.
+       *
+       * There is no SDK and nothing to await: the server hands back a signed
+       * set of fields, the browser posts them to PayU, and PayU brings the
+       * student back to this page afterwards. The form is built and submitted
+       * rather than fetched because a fetch would follow the redirect itself
+       * and leave the student staring at this page while the payment happened
+       * invisibly in the background.
+       */
+      if (orderData.provider === 'payu') {
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = orderData.action;
+        // Nothing about the payment lives in this DOM node beyond the moment
+        // of submission, but hidden inputs are how PayU expects to receive it.
+        Object.entries(orderData.fields).forEach(([name, value]) => {
+          const input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = name;
+          input.value = value ?? '';
+          form.appendChild(input);
+        });
+        document.body.appendChild(form);
+        form.submit();
+        // Deliberately no setIsEnrolling(false): the page is navigating away,
+        // and re-enabling the button would let a second tap fire mid-redirect.
+        return;
+      }
+
       const res = await loadRazorpayScript();
       if (!res) throw new Error("Razorpay SDK failed to load. Are you online?");
 
@@ -233,7 +281,10 @@ export default function CourseDetailPage() {
     if (!window.confirm('⚠️ Are you sure? This will delete all modules and content.')) return;
     try {
       await fetchAPI(`/courses/${course.id}`, { method: 'DELETE' });
-      navigate(user?.role === 'educator' ? '/dashboard' : '/explore');
+      // Home, not Explore: that tab is hidden for students now. Only an
+      // educator can reach this delete, so the second branch is a safety net
+      // rather than a path anyone walks.
+      navigate(user?.role === 'educator' ? '/dashboard' : '/home');
     } catch (err) {
       alert(err.message || 'Delete failed');
     }
@@ -435,6 +486,27 @@ export default function CourseDetailPage() {
           Before this existed, tapping a class landed on an empty "Curriculum"
           heading with nothing under it, from home, My Learning and every
           notification alike. The class looked broken rather than full.       */}
+      {/*
+        The outcome of a payment the student was redirected away for.
+
+        Stated on the page rather than in an alert(): they have just come back
+        from another site and the first thing they need is confirmation that
+        their money did something. A failure says to try again rather than
+        implying the charge went through.
+      */}
+      {paymentNotice && (
+        <div
+          role="status"
+          className={`mb-6 p-4 border-[3px] border-black rounded-2xl font-bold shadow-[4px_4px_0px_0px_#111] ${
+            paymentNotice === 'success' ? 'bg-[#A7E2D1]' : 'bg-red-100 text-red-800'
+          }`}
+        >
+          {paymentNotice === 'success'
+            ? 'Payment received — you now have access to this course.'
+            : 'That payment did not go through, and you have not been charged. You can try again.'}
+        </div>
+      )}
+
       {subjects.length > 0 && (
         <div className="mb-8 md:mb-12">
           <div className="flex items-baseline justify-between gap-3 mb-4 md:mb-6">

@@ -43,31 +43,33 @@ export function slugifyCategory(raw) {
 }
 
 /**
- * The built-ins plus whatever the server sent, without duplicates.
+ * The categories to render, from the server when it has answered.
  *
- * The server's ORDER IS THE ORDER. A teacher can rearrange the chips, and that
- * arrangement lives in course_categories.sort_order — so sorting here, or
- * forcing the shipped five to the front, would quietly override the thing they
- * just dragged into place. An earlier version did exactly that and the reorder
- * appeared to save and then do nothing.
+ * Two things this must get right, both learned the hard way.
  *
- * Built-ins the server did not mention are appended rather than dropped, so a
- * partial or failed response degrades to "the five are still there, at the
- * end" instead of chips vanishing.
+ * It preserves every field. An earlier version rebuilt each entry as
+ * `{ id, label }`, silently dropping `is_builtin` and `course_count` — so the
+ * delete confirmation said "No classes are using it" about a tag with classes
+ * in it, and the built-in guard read `undefined` and let everything through.
+ * Rebuilding an object field by field is how a column added on the server
+ * quietly fails to arrive.
+ *
+ * And it distinguishes "not asked yet" from "asked, and there are none".
+ * `undefined` means the fetch is still in flight, so the shipped five are shown
+ * to avoid a flash of empty filter bar. `[]` means the server genuinely has no
+ * categories — every one deleted — and re-adding the built-ins there would
+ * resurrect tags a teacher had just removed.
  */
 export function mergeCategories(fromServer) {
-  const server = Array.isArray(fromServer) ? fromServer.filter((c) => c?.id) : [];
-  if (server.length === 0) return COURSE_CATEGORIES.map((c) => ({ ...c }));
+  if (!Array.isArray(fromServer)) return COURSE_CATEGORIES.map((c) => ({ ...c }));
 
   const out = [];
   const seen = new Set();
-  for (const c of server) {
-    if (seen.has(c.id)) continue;
+  for (const c of fromServer) {
+    if (!c?.id || seen.has(c.id)) continue;
     seen.add(c.id);
-    out.push({ id: c.id, label: c.label || c.id });
-  }
-  for (const c of COURSE_CATEGORIES) {
-    if (!seen.has(c.id)) out.push({ ...c });
+    // Spread, not a rebuild: whatever the server sends travels with it.
+    out.push({ ...c, label: c.label || c.id });
   }
   return out;
 }

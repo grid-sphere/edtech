@@ -429,6 +429,27 @@ async function setupDatabase() {
         await pool.query(`ALTER TABLE courses ADD COLUMN IF NOT EXISTS category VARCHAR(64) DEFAULT NULL`);
 
         /*
+         * Which gateway took the money, and its id for the payment.
+         *
+         * payment_orders was built around Razorpay: `razorpay_payment_id` and
+         * `razorpay_signature` are named for it. Storing PayU's mihpayid in a
+         * column called razorpay_payment_id would be a lie that survives in the
+         * accounting records, so PayU gets its own column and the Razorpay ones
+         * are left to mean what they say.
+         *
+         * Existing rows predate any choice of gateway and are all Razorpay,
+         * which is why that is the default.
+         */
+        await pool.query(
+            `ALTER TABLE payment_orders
+             ADD COLUMN IF NOT EXISTS provider VARCHAR(20) NOT NULL DEFAULT 'razorpay'`
+        );
+        await pool.query(
+            `ALTER TABLE payment_orders
+             ADD COLUMN IF NOT EXISTS gateway_payment_id VARCHAR(255)`
+        );
+
+        /*
          * The categories themselves, so teachers can add their own.
          *
          * The five built-ins used to be a hardcoded list in two files. That is
@@ -477,16 +498,49 @@ async function setupDatabase() {
              WHERE sort_order IS NULL AND is_builtin = FALSE
         `);
 
-        for (const c of BUILTIN_COURSE_CATEGORIES) {
-            /*
-             * sort_order is set on insert only, never on conflict: re-seeding
-             * on every boot would undo a teacher's arrangement each restart.
-             */
+        /*
+         * Seeded once, on an empty table — not re-asserted on every boot.
+         *
+         * The five are a starting point, not a permanent fixture: a teacher can
+         * delete any of them. Re-inserting them at startup would bring a
+         * deleted tag back the next time the server restarted, which is the
+         * worst kind of bug — it works when you test it and undoes itself
+         * overnight.
+         *
+         * A school that genuinely wants them all gone ends up with an empty
+         * table, and that is a legitimate state rather than a signal to reseed.
+         */
+        /*
+         * Marked, not inferred from the table being empty.
+         *
+         * "Empty means never seeded" is wrong in exactly the case that matters:
+         * a school that deletes all five ends up with an empty table and gets
+         * them all back on the next restart. A flag records that seeding
+         * happened once, so an empty table stays empty because someone meant
+         * it to be.
+         */
+        await pool.query(
+            `ALTER TABLE platform_settings
+             ADD COLUMN IF NOT EXISTS categories_seeded BOOLEAN NOT NULL DEFAULT FALSE`
+        );
+        await pool.query(
+            `INSERT INTO platform_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`
+        );
+
+        const seeded = await pool.query(
+            `SELECT categories_seeded FROM platform_settings WHERE id = 1`
+        );
+        if (!seeded.rows[0]?.categories_seeded) {
+            for (const c of BUILTIN_COURSE_CATEGORIES) {
+                await pool.query(
+                    `INSERT INTO course_categories (id, label, is_builtin, sort_order)
+                          VALUES ($1, $2, TRUE, $3)
+                     ON CONFLICT (id) DO NOTHING`,
+                    [c.id, c.label, BUILTIN_COURSE_CATEGORIES.indexOf(c)]
+                );
+            }
             await pool.query(
-                `INSERT INTO course_categories (id, label, is_builtin, sort_order)
-                      VALUES ($1, $2, TRUE, $3)
-                 ON CONFLICT (id) DO UPDATE SET label = EXCLUDED.label, is_builtin = TRUE`,
-                [c.id, c.label, BUILTIN_COURSE_CATEGORIES.indexOf(c)]
+                `UPDATE platform_settings SET categories_seeded = TRUE WHERE id = 1`
             );
         }
 

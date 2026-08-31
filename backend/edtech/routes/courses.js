@@ -1,6 +1,5 @@
 ﻿import express from "express";
 import {
-    CATEGORY_IDS,
     parseCategory,
     parseCategoryLabel,
     ensureCategory,
@@ -8,7 +7,7 @@ import {
     listCategories,
 } from "../constants/courseCategories.js";
 import pool from "../config/database.js";
-import authMiddleware from "../middleware/auth.js";
+import authMiddleware, { authOnly } from "../middleware/auth.js";
 import { activeEnrolmentSql, parseDurationMonths, parseDurationMinutes } from "../utils/enrollmentAccess.js";
 import { announceCourseIfNew } from "../utils/notify.js";
 
@@ -79,7 +78,7 @@ router.get("/categories", async (req, res) => {
  * Registered before "/:id" for the same reason as the GET above: "/:id" would
  * happily match "categories" and this would never be reached.
  */
-router.put("/categories/reorder", authMiddleware, async (req, res) => {
+router.put("/categories/reorder", authOnly, async (req, res) => {
     try {
         if (req.user.role === "student") {
             return res.status(403).json({ error: "Only teachers can reorder categories." });
@@ -134,12 +133,18 @@ router.put("/categories/reorder", authMiddleware, async (req, res) => {
 /**
  * DELETE /api/courses/categories/:id
  *
- * Removes a custom category and untags every course filed under it.
+ * Removes a category and untags every course filed under it.
  *
  * Before "/:id", like the other two — Express would otherwise read
  * "categories" as a course id.
+ *
+ * `authOnly`, not the full middleware. The default one infers content access
+ * from `req.params.id`, and a category id is a slug like "hp_board" — it ran
+ * `WHERE content_items.id = 'hp_board'` against a uuid column, which Postgres
+ * rejects outright (22P02). Every delete returned 500 before the handler was
+ * even reached. Any router whose ids are not content ids wants authOnly.
  */
-router.delete("/categories/:id", authMiddleware, async (req, res) => {
+router.delete("/categories/:id", authOnly, async (req, res) => {
     const client = await pool.connect();
     try {
         if (req.user.role === "student") {
@@ -149,19 +154,17 @@ router.delete("/categories/:id", authMiddleware, async (req, res) => {
         const { id } = req.params;
 
         /*
-         * Built-ins cannot be deleted, and saying so is the honest answer.
+         * Built-ins are deletable too.
          *
-         * Deleting the row would appear to work and change nothing: the five
-         * are shipped in the frontend for first paint, mergeCategories adds
-         * back any the server omits, and categoryExists accepts them whether
-         * or not a row exists. The chip would reappear on the next load and
-         * the teacher would reasonably conclude the button is broken.
+         * They were refused, because three separate things resurrected them:
+         * the schema seeder re-inserted them on every boot, listCategories fell
+         * back to the shipped five when the table came back empty, and
+         * categoryExists treated their ids as always-valid. Deleting one
+         * therefore appeared to work and undid itself — worse than refusing.
+         *
+         * All three are fixed, so the table is now the only authority and a
+         * built-in can go like any other tag.
          */
-        if (CATEGORY_IDS.includes(id)) {
-            return res.status(400).json({
-                error: "The built-in categories can't be deleted. You can move them to the end instead.",
-            });
-        }
 
         const found = await client.query(
             `SELECT id, label FROM course_categories WHERE id = $1`, [id]

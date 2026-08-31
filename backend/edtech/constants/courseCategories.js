@@ -148,7 +148,13 @@ export async function ensureCategory(pool, id, label, userId = null) {
  * failure custom categories were meant to remove, not introduce.
  */
 export async function categoryExists(pool, id) {
-    if (CATEGORY_IDS.includes(id)) return true;
+    /*
+     * No short-circuit on the built-in ids.
+     *
+     * They used to be treated as always-valid, which meant a deleted built-in
+     * stayed assignable: a course could be filed under a tag with no row and
+     * therefore no chip. The table is the only authority now.
+     */
     const { rows } = await pool.query(
         `SELECT 1 FROM course_categories WHERE id = $1`, [id]
     );
@@ -184,8 +190,21 @@ export async function listCategories(pool) {
                FROM course_categories c
               ORDER BY c.sort_order ASC NULLS LAST, c.label ASC`
         );
-        return rows.length ? rows : COURSE_CATEGORIES;
+        /*
+         * Returned as-is, including empty.
+         *
+         * Falling back to the built-ins when the table is empty would undo a
+         * teacher who deleted every tag — the chips would reappear on the next
+         * page load with nothing to explain it.
+         */
+        return rows;
     } catch (err) {
+        /*
+         * Only a broken query falls back. This is the pre-migration case — the
+         * table does not exist yet — where the shipped five are better than an
+         * empty filter bar. An empty *table* is a real answer and is returned
+         * above.
+         */
         console.error("[categories] falling back to built-ins:", err.message);
         return COURSE_CATEGORIES;
     }

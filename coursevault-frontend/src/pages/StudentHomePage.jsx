@@ -604,13 +604,14 @@ export default function StudentHomePage() {
             <p className="text-xs text-white/80 font-medium mb-3">
               Everything for your class in one place.
             </p>
-            <button
-              type="button"
-              onClick={() => navigate('/explore')}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-full border-2 border-black bg-white text-black font-bold text-sm shadow-[2px_2px_0px_0px_#111]"
-            >
-              Explore Courses <ArrowRight size={15} strokeWidth={3} />
-            </button>
+            {/*
+              The "Explore Courses" button is gone with the tab it pointed at.
+
+              This banner sits above the chips and the course list on the same
+              screen, so the courses it invited the reader to explore are
+              already directly below it. A button that scrolls you to where you
+              are is worse than no button.
+            */}
           </div>
           <BookOpen
             size={150}
@@ -700,15 +701,15 @@ export default function StudentHomePage() {
             back to the full list — otherwise the reader has to work out for
             themselves that a chip is still selected further up the page.
           */}
-          {courses.length === 0 ? (
-            <button
-              type="button"
-              onClick={() => navigate('/explore')}
-              className="mt-4 px-4 py-2 rounded-full border-2 border-black bg-[#A7E2D1] font-bold text-xs shadow-[2px_2px_0px_0px_#111]"
-            >
-              Browse courses
-            </button>
-          ) : (
+          {/*
+            Only the reset remains.
+
+            The other branch sent a student with no classes to the Explore
+            page, which is now hidden — and the courses it would have shown are
+            listed under "More courses" further down this very page. There is
+            nowhere else to send them.
+          */}
+          {courses.length > 0 && (
             <button
               type="button"
               onClick={() => { setCategory('all'); clearQuery(); }}

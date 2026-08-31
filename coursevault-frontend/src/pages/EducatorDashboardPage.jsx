@@ -187,9 +187,17 @@ export default function EducatorDashboardPage() {
    */
   const deleteTag = async (c) => {
     const n = c.course_count ?? 0;
+    /*
+     * `course_count` used to arrive undefined here, because mergeCategories
+     * rebuilt each category as { id, label } and dropped it. Every
+     * confirmation therefore read "No classes are using it" — including for
+     * tags with classes in them. The count is real now; the ?? 0 is a
+     * genuine fallback rather than the usual case.
+     */
     const consequence = n === 0
       ? 'No classes are using it.'
-      : `${n} class${n === 1 ? '' : 'es'} will lose this tag. The class${n === 1 ? '' : 'es'} stay — only the tag is removed.`;
+      : `${n} class${n === 1 ? '' : 'es'} will become uncategorised. `
+        + `The class${n === 1 ? '' : 'es'} stay — you can give ${n === 1 ? 'it' : 'them'} another tag afterwards.`;
     if (!window.confirm(`Delete the "${c.label}" tag?\n\n${consequence}\n\nThis cannot be undone.`)) return;
 
     setTagError('');
@@ -447,22 +455,15 @@ export default function EducatorDashboardPage() {
                   <ChevronDown size={14} strokeWidth={3} />
                 </button>
                 {/*
-                  Built-ins render the button disabled rather than hidden.
-
-                  Hiding it would leave a gap that reads as a rendering bug and
-                  makes the rows different widths. Disabled with a reason says
-                  the rule out loud — and the server refuses them anyway, so
-                  this only avoids offering something that would be declined.
+                  Every tag can go, including the five that ship with the app.
+                  They are a starting point for a new school, not a fixture.
                 */}
                 <button
                   type="button"
                   onClick={() => deleteTag(c)}
-                  disabled={c.is_builtin}
                   aria-label={`Delete ${c.label}`}
-                  title={c.is_builtin
-                    ? "Built-in tags can't be deleted — move it to the end instead"
-                    : `Delete ${c.label}`}
-                  className="w-7 h-7 shrink-0 border-2 border-black rounded flex items-center justify-center bg-white text-red-600 hover:bg-red-50 disabled:opacity-25 disabled:cursor-not-allowed disabled:text-gray-400 transition-colors"
+                  title={`Delete ${c.label}`}
+                  className="w-7 h-7 shrink-0 border-2 border-black rounded flex items-center justify-center bg-white text-red-600 hover:bg-red-50 transition-colors"
                 >
                   <Trash2 size={13} strokeWidth={3} />
                 </button>

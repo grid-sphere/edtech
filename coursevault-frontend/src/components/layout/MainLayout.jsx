@@ -139,7 +139,18 @@ export default function MainLayout() {
       ]
     : [
         { path: '/home', label: 'Home' },
-        { path: '/explore', label: 'Explore' },
+        /*
+         * Explore is hidden, not removed.
+         *
+         * The route and the page are still there, and the class view behind
+         * `?class=` is exactly where a class card on the home screen leads —
+         * so the page is very much in use. What is gone is the tab, because
+         * Home now lists the whole published catalogue and a second entry
+         * point to the same courses only asks the reader which one to trust.
+         *
+         * Putting the line back here is all it takes to bring the tab back.
+         */
+        // { path: '/explore', label: 'Explore' },
         { path: '/my-learning', label: 'My Learning' },
       ];
 

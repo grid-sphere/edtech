@@ -1,6 +1,19 @@
 import express from "express";
 import crypto from "crypto";
 import Razorpay from "razorpay";
+import {
+    PAYU_MERCHANT_KEY,
+    PAYU_ENDPOINT,
+    PAYU_MODE,
+    PUBLIC_BASE_URL,
+    payuConfigured,
+    requestHash,
+    responseHash,
+    hashesMatch,
+    formatAmount,
+    newTxnId,
+    sanitiseText,
+} from "../utils/payu.js";
 import pool from "../config/database.js";
 import { expiryFrom, activeEnrolmentSql } from "../utils/enrollmentAccess.js";
 import { notifyCourseOwner } from "../utils/notify.js";
@@ -22,17 +35,55 @@ const router = express.Router();
 const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID;
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;
 
-export const paymentsConfigured = Boolean(RAZORPAY_KEY_ID && RAZORPAY_KEY_SECRET);
+const razorpayConfigured = Boolean(RAZORPAY_KEY_ID && RAZORPAY_KEY_SECRET);
+
+/**
+ * Which gateway takes the money.
+ *
+ * Inferred from whichever credentials are present, so filling in one pair of
+ * variables is the whole configuration. PAYMENT_PROVIDER overrides it for the
+ * case where both are set — otherwise "I pasted my PayU keys in and it still
+ * used Razorpay" would be a genuinely baffling afternoon.
+ */
+export const PAYMENT_PROVIDER = (() => {
+    const forced = (process.env.PAYMENT_PROVIDER || "").trim().toLowerCase();
+    if (forced === "payu" || forced === "razorpay") return forced;
+    if (payuConfigured) return "payu";
+    if (razorpayConfigured) return "razorpay";
+    return "none";
+})();
+
+export const paymentsConfigured = PAYMENT_PROVIDER !== "none";
 
 if (!paymentsConfigured) {
     console.warn(
-        "⚠️  RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET are not set.\n" +
-        "   Paid enrolment is disabled; free courses are unaffected.\n" +
-        "   Set both in backend/edtech/.env to enable payments."
+        "⚠️  No payment provider is configured.\n" +
+        "   Set PAYU_MERCHANT_KEY + PAYU_MERCHANT_SALT, or\n" +
+        "   RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET, in backend/edtech/.env.\n" +
+        "   Paid enrolment is disabled; free courses are unaffected."
     );
+} else if (PAYMENT_PROVIDER === "payu") {
+    console.log(`💳 Payments: PayU (${PAYU_MODE} mode), callbacks to ${PUBLIC_BASE_URL}`);
+    if (PAYU_MODE !== "live") {
+        console.log("   Test mode — no real money moves. Set PAYU_MODE=live when ready.");
+    }
+    /*
+     * Said at boot, not discovered at checkout. PayU redirects a real browser
+     * to this address; if it is localhost, every payment dead-ends on a page
+     * the student's phone cannot reach.
+     */
+    if (/localhost|127\.0\.0\.1/.test(PUBLIC_BASE_URL)) {
+        console.warn(
+            "⚠️  PUBLIC_BASE_URL points at localhost. PayU redirects the customer's\n" +
+            "   browser there after payment, so this only works while you are testing\n" +
+            "   on this machine. Set it to your public URL before taking real payments."
+        );
+    }
+} else {
+    console.log("💳 Payments: Razorpay");
 }
 
-const razorpayInstance = paymentsConfigured
+const razorpayInstance = razorpayConfigured
     ? new Razorpay({ key_id: RAZORPAY_KEY_ID, key_secret: RAZORPAY_KEY_SECRET })
     : null;
 
@@ -162,6 +213,75 @@ router.post("/create-order", authMiddleware, async (req, res) => {
             });
         }
 
+        /*
+         * PayU: sign a form, hand it back, let the browser post it.
+         *
+         * Everything above here — the already-enrolled check, the free path,
+         * the price lookup, the pending-order reuse — is identical whichever
+         * gateway is in use, which is why this branches here rather than in a
+         * route of its own. Duplicating those guards is how two payment paths
+         * drift until one of them lets someone buy a course twice.
+         */
+        if (PAYMENT_PROVIDER === "payu") {
+            const txnid = pendingOrder.rows.length > 0
+                ? pendingOrder.rows[0].order_id
+                : newTxnId();
+
+            if (pendingOrder.rows.length === 0) {
+                await client.query(`
+                    INSERT INTO payment_orders (order_id, user_id, course_id, amount, status, provider)
+                    VALUES ($1, $2, $3, $4, 'created', 'payu')
+                `, [txnid, userId, courseId, courseData.price]);
+            }
+
+            await client.query(`
+                INSERT INTO enrollments (user_id, course_id, payment_status, status)
+                VALUES ($1, $2, 'pending', 'pending')
+                ON CONFLICT (user_id, course_id)
+                DO UPDATE SET payment_status = 'pending', updated_at = NOW()
+            `, [userId, courseId]);
+
+            const buyer = await client.query(
+                `SELECT name, email, phone FROM users WHERE id = $1`, [userId]
+            );
+            const me = buyer.rows[0] || {};
+
+            /*
+             * PayU rejects several punctuation characters in these fields and
+             * requires all of them, so each has a fallback. A course titled
+             * "Class 9 (HPBOSE)" would otherwise be refused at the gateway,
+             * which reads to the student as the site being broken.
+             */
+            const fields = {
+                key: PAYU_MERCHANT_KEY,
+                txnid,
+                amount: formatAmount(courseData.price),
+                productinfo: sanitiseText(courseData.title, "Course"),
+                firstname: sanitiseText((me.name || "").split(" ")[0], "Student"),
+                email: me.email || "",
+                phone: (me.phone || "").replace(/\D/g, "").slice(-10),
+                surl: `${PUBLIC_BASE_URL}/api/payments/payu/callback`,
+                furl: `${PUBLIC_BASE_URL}/api/payments/payu/callback`,
+                // Carries the course back to us. PayU echoes udf1 in the
+                // response, so the callback knows what was bought without
+                // trusting anything the browser sends.
+                udf1: courseId,
+            };
+            fields.hash = requestHash(fields);
+
+            await client.query('COMMIT');
+
+            return res.json({
+                success: true,
+                provider: "payu",
+                action: PAYU_ENDPOINT,
+                fields,
+                amount: courseData.price,
+                currency: "INR",
+                courseTitle: courseData.title,
+            });
+        }
+
         let orderId;
 
         if (pendingOrder.rows.length > 0) {
@@ -212,6 +332,7 @@ router.post("/create-order", authMiddleware, async (req, res) => {
         
         res.json({
             success: true,
+            provider: "razorpay",
             orderId: orderId,
             // The key id is public — the checkout widget needs it in the
             // browser. The secret never leaves the server.
@@ -326,6 +447,167 @@ router.post("/verify", authMiddleware, requirePayments, async (req, res) => {
         await client.query('ROLLBACK');
         console.error("Payment verification error:", error);
         res.status(500).json({ error: error.message });
+    } finally {
+        client.release();
+    }
+});
+
+
+/**
+ * POST /api/payments/payu/callback
+ *
+ * PayU's surl and furl. Not an API call — PayU redirects the customer's
+ * browser here with a form POST, so this runs with no session, no JWT and no
+ * CORS. It is a public endpoint that grants course access, which makes the
+ * hash check the only thing standing between a forged form and a free course.
+ *
+ * Three things are verified, and all three matter:
+ *
+ *   1. the reverse hash, computed with our salt — proves PayU sent it;
+ *   2. the txnid exists and is still awaiting payment — stops a genuine
+ *      callback being replayed to re-grant or re-stamp an enrolment;
+ *   3. the amount equals what we recorded when the order was created —
+ *      a signed response for ₹1 must not unlock a ₹1,000 course.
+ *
+ * The response is a redirect rather than JSON: what arrives here is a person
+ * looking at a browser, not a fetch() waiting on a status code.
+ */
+router.post("/payu/callback", async (req, res) => {
+    const back = (courseId, state) =>
+        `${PUBLIC_BASE_URL}/course/${courseId || ""}?payment=${state}`;
+
+    const body = req.body || {};
+    const { txnid, status, amount, mihpayid, error_Message: errorMessage } = body;
+    const courseId = body.udf1 || null;
+
+    if (!txnid) {
+        return res.redirect(303, back(courseId, "failed"));
+    }
+
+    const client = await pool.connect();
+    try {
+        if (!hashesMatch(body.hash, responseHash(body))) {
+            /*
+             * Logged loudly and granted nothing. A mismatch is either a
+             * misconfigured salt or someone posting a hand-written form at the
+             * endpoint, and the two are worth telling apart in the logs.
+             */
+            console.error(`[payu] hash mismatch on txnid ${txnid} — ignoring callback`);
+            return res.redirect(303, back(courseId, "failed"));
+        }
+
+        await client.query("BEGIN");
+
+        /*
+         * FOR UPDATE: PayU can post the same result more than once, and the
+         * student's browser may retry. Locking the row means two concurrent
+         * callbacks cannot both pass the pending check and both grant access.
+         */
+        const orderRes = await client.query(
+            `SELECT user_id, course_id, amount, status
+               FROM payment_orders
+              WHERE order_id = $1 AND provider = 'payu'
+              FOR UPDATE`,
+            [txnid]
+        );
+
+        if (orderRes.rows.length === 0) {
+            await client.query("ROLLBACK");
+            console.error(`[payu] callback for unknown txnid ${txnid}`);
+            return res.redirect(303, back(courseId, "failed"));
+        }
+
+        const order = orderRes.rows[0];
+
+        // Already settled — a repeat post, not a new payment.
+        if (order.status === "completed") {
+            await client.query("ROLLBACK");
+            return res.redirect(303, back(order.course_id, "success"));
+        }
+
+        if (String(status).toLowerCase() !== "success") {
+            await client.query(
+                `UPDATE payment_orders
+                    SET status = 'failed', error_message = $2, updated_at = NOW()
+                  WHERE order_id = $1`,
+                [txnid, errorMessage || status || "failed"]
+            );
+            /*
+             * The enrolment is left exactly as it was. It may be a live
+             * enrolment the student was renewing early, and a failed renewal
+             * must not revoke access they already paid for.
+             */
+            await client.query("COMMIT");
+            return res.redirect(303, back(order.course_id, "failed"));
+        }
+
+        /*
+         * The amount is checked against our own record, not against the
+         * request. The hash proves PayU sent these values; it does not prove
+         * they are the values we asked for.
+         */
+        if (formatAmount(order.amount) !== formatAmount(amount)) {
+            await client.query(
+                `UPDATE payment_orders
+                    SET status = 'failed',
+                        error_message = $2,
+                        updated_at = NOW()
+                  WHERE order_id = $1`,
+                [txnid, `amount mismatch: expected ${formatAmount(order.amount)}, got ${formatAmount(amount)}`]
+            );
+            await client.query("COMMIT");
+            console.error(`[payu] amount mismatch on ${txnid}`);
+            return res.redirect(303, back(order.course_id, "failed"));
+        }
+
+        await client.query(
+            `UPDATE payment_orders
+                SET status = 'completed',
+                    gateway_payment_id = $2,
+                    updated_at = NOW()
+              WHERE order_id = $1`,
+            [txnid, mihpayid || null]
+        );
+
+        // Same rule as every other path: the clock starts when the payment
+        // completes, not when the order was created.
+        const duration = await client.query(
+            `SELECT access_duration_months, access_duration_minutes FROM courses WHERE id = $1`,
+            [order.course_id]
+        );
+        const expiresAt = expiryFrom({
+            months: duration.rows[0]?.access_duration_months,
+            minutes: duration.rows[0]?.access_duration_minutes,
+        });
+
+        await client.query(
+            `UPDATE enrollments
+                SET status = 'active',
+                    payment_status = 'completed',
+                    payment_id = $1,
+                    amount_paid = $2,
+                    enrolled_at = NOW(),
+                    expires_at = $5,
+                    updated_at = NOW()
+              WHERE user_id = $3 AND course_id = $4`,
+            [mihpayid || txnid, order.amount, order.user_id, order.course_id, expiresAt]
+        );
+
+        await client.query("COMMIT");
+
+        await notifyCourseOwner(order.course_id, {
+            type: "enrolment",
+            title: "A student enrolled",
+            body: `Paid ₹${order.amount}`,
+            actorId: order.user_id,
+            link: `/analytics`,
+        });
+
+        return res.redirect(303, back(order.course_id, "success"));
+    } catch (err) {
+        try { await client.query("ROLLBACK"); } catch { /* connection already gone */ }
+        console.error("[payu] callback error:", err);
+        return res.redirect(303, back(courseId, "failed"));
     } finally {
         client.release();
     }
