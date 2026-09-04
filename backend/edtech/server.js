@@ -20,6 +20,7 @@ import testRoutes from "./routes/test.js";        // ✅ Test routes (NEW)
 import notificationRoutes from "./routes/notifications.js";
 import supportRoutes from "./routes/support.js";
 import homeRoutes from "./routes/home.js";
+import galleryRoutes from "./routes/gallery.js";
 import settingsRoutes from "./routes/settings.js";
 import { verifyMail } from "./utils/mailer.js";
 
@@ -492,6 +493,33 @@ async function setupDatabase() {
          * keeps the arrangement it already had, rather than jumping to
          * alphabetical the moment this column appears.
          */
+        /*
+         * Home-screen banner images.
+         *
+         * Their own table rather than a flag on courses. The carousel used to
+         * be "published classes that happen to have a thumbnail", which made
+         * the most prominent surface in the app a side effect of a teacher
+         * uploading a cover.
+         *
+         * link_course_id is ON DELETE SET NULL, deliberately. CASCADE would
+         * mean deleting a class silently removes a banner an admin uploaded
+         * and positioned — losing their work to a change they made somewhere
+         * else entirely. The banner survives with no link and the admin can
+         * repoint or remove it.
+         */
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS gallery_images (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                image_url TEXT NOT NULL,
+                caption VARCHAR(120),
+                link_course_id UUID REFERENCES courses(id) ON DELETE SET NULL,
+                sort_order INT NOT NULL DEFAULT 0,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
+
         await pool.query(`ALTER TABLE course_categories ADD COLUMN IF NOT EXISTS sort_order INT`);
         await pool.query(`
             UPDATE course_categories SET sort_order = 1000
@@ -943,6 +971,7 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/support", supportRoutes);
 app.use("/api/home", homeRoutes);
 app.use("/api/settings", settingsRoutes);
+app.use("/api/gallery", galleryRoutes);
 
 // ============================================
 // HLS Proxy Route

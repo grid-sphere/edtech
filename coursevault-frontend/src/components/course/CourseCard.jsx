@@ -8,7 +8,20 @@ import { resolveMediaUrl } from '../../services/api.js';
 const formatPrice = (price) =>
   `₹${Number(price).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 
-export default function CourseCard({ course, index, onClick, onBuyCourse, isMyLearning }) {
+/**
+ * @param {boolean} [showPrice] render the corner price badge.
+ *
+ * Off by default, so every browsing surface loses the badge without each page
+ * having to opt out — Explore's class grid, the subject grid inside a class,
+ * and the related list on a course page are all covered by this one default,
+ * and a screen added tomorrow inherits it.
+ *
+ * The educator dashboard passes it back in. That badge is not a price tag on a
+ * shop listing; it is a teacher reading back the figure they set, on a page
+ * only they can open. Defaulting it off there would have deleted data from its
+ * owner rather than hiding it from students.
+ */
+export default function CourseCard({ course, index, onClick, onBuyCourse, isMyLearning, showPrice = false }) {
   const bgColor = getBgColor(course.id);
   const tagColor = getTagColor(course.id);
 
@@ -102,7 +115,7 @@ export default function CourseCard({ course, index, onClick, onBuyCourse, isMyLe
                 />
               </div>
             </>
-          ) : (
+          ) : showPrice ? (
             <div className="absolute bottom-1 right-1 md:bottom-auto md:top-4 md:right-4 bg-white border border-black rounded-full px-1.5 py-0.5 md:px-3 md:py-1 text-[9px] md:text-xs font-bold md:shadow-[2px_2px_0px_0px_#111] flex items-center gap-1 z-10">
               {isPaid ? (
                 <>
@@ -113,7 +126,7 @@ export default function CourseCard({ course, index, onClick, onBuyCourse, isMyLe
                 'Free'
               )}
             </div>
-          )}
+          ) : null}
 
           <div className="hidden md:block absolute md:top-4 md:left-4 bg-black text-white md:px-3 md:py-1 rounded-full md:text-[10px] font-bold uppercase tracking-wider z-10">
             {course.status || 'published'}

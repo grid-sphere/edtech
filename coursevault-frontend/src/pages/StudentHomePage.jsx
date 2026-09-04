@@ -289,8 +289,11 @@ function CourseCarousel({ slides, onOpen }) {
             onClick={() => onOpen(s)}
             // Only the visible slide is reachable; the rest are hidden from
             // assistive tech and the tab order so the carousel is one stop.
-            tabIndex={i === safe ? 0 : -1}
+            tabIndex={i === safe && s.link_course_id ? 0 : -1}
             aria-hidden={i !== safe}
+            /* A banner with no destination is an image, so it is not offered
+               to a keyboard or a screen reader as something to activate. */
+            disabled={!s.link_course_id}
             className={`absolute inset-0 w-full text-left transition-opacity duration-500 ${
               i === safe ? 'opacity-100' : 'opacity-0 pointer-events-none'
             }`}
@@ -322,10 +325,14 @@ function CourseCarousel({ slides, onOpen }) {
               <h2 className="text-sm md:text-xl font-black leading-tight line-clamp-2 drop-shadow">
                 {s.title}
               </h2>
-              <span className="inline-flex items-center gap-1 mt-1.5 text-[11px] md:text-sm font-bold">
-                {s.enrolled ? 'Continue' : 'Explore now'}
-                <ArrowRight size={14} strokeWidth={3} />
-              </span>
+              {/* Only on a banner that leads somewhere. "Explore now" under a
+                  decorative image is an invitation to tap something inert. */}
+              {s.link_course_id && (
+                <span className="inline-flex items-center gap-1 mt-1.5 text-[11px] md:text-sm font-bold">
+                  {s.enrolled ? 'Continue' : 'Explore now'}
+                  <ArrowRight size={14} strokeWidth={3} />
+                </span>
+              )}
             </div>
           </button>
         ))}
@@ -583,14 +590,16 @@ export default function StudentHomePage() {
         <CourseCarousel
           slides={featured}
           /*
-           * Both branches open the class itself now.
+           * The linked class, not the slide.
            *
-           * The unenrolled branch used to drop the reader on the whole Explore
-           * catalogue, losing the one slide they had just tapped. The class
-           * page lists its subjects whether or not you are enrolled, so it is
-           * the right destination either way.
+           * A slide's id used to be a course id, because slides *were* courses.
+           * They are gallery rows now, so navigating to s.id would open
+           * /explore?class=<gallery image id> and find nothing — the one bug in
+           * this change that a screenshot of a working carousel would not show.
+           *
+           * A banner with no link is decorative and does nothing when tapped.
            */
-          onOpen={(s) => navigate(classHref(s.id))}
+          onOpen={(s) => s.link_course_id && navigate(classHref(s.link_course_id))}
         />
       ) : (
         <div className="relative overflow-hidden rounded-xl border-2 border-black bg-[#932973] text-white p-4 md:p-5 mb-3 shadow-[3px_3px_0px_0px_#111]">
@@ -773,8 +782,6 @@ export default function StudentHomePage() {
  * reason — play implies resuming.
  */
 function AvailableRow({ course, onOpen }) {
-  const free = !course.price || Number(course.price) === 0;
-
   return (
     <div
       role="button"
@@ -813,11 +820,12 @@ function AvailableRow({ course, onOpen }) {
           <span className="flex items-center gap-1">
             <Users size={11} strokeWidth={3} /> {course.student_count}
           </span>
-          {/* Price stated up front. Finding out at the checkout that a course
-              costs money is a worse moment than reading it here. */}
-          <span className={`px-1.5 rounded-full ${free ? 'bg-[#A7E2D1]' : 'bg-[#F9E076]'} text-black`}>
-            {free ? 'Free' : `₹${course.price}`}
-          </span>
+          {/*
+            The price badge that sat here has been removed, along with the
+            matching one on CourseCard, so no browsing surface prices a class.
+            The figure is still shown on the course page itself, where it is
+            attached to the button that spends the money.
+          */}
         </div>
       </div>
 
@@ -862,8 +870,20 @@ function CourseRow({ course, onOpen }) {
 
       <div className="min-w-0 flex-1">
         <h3 className="font-black text-sm leading-tight truncate">{course.title}</h3>
-        {course.parent_title && (
-          <p className="text-[11px] font-bold text-gray-500">in {course.parent_title}</p>
+        {/*
+          This line used to read "in NEET" — the subtitle of a subject card,
+          naming the class it belonged to. The rows are classes now, so it says
+          what the student holds inside one instead.
+
+          Zero is a real state, not missing data: a student can be enrolled in
+          a class directly rather than in any of its subjects, and "0 subjects"
+          under a class they can open would read as an error. The line is simply
+          absent then, and the module and student counts below still describe it.
+        */}
+        {course.subject_count > 0 && (
+          <p className="text-[11px] font-bold text-gray-500">
+            {course.subject_count} {course.subject_count === 1 ? 'subject' : 'subjects'} enrolled
+          </p>
         )}
         {/* Counts abbreviated to fit one line beside a 56px thumbnail.
             "42 chapters · 520 students" wrapped on a narrow phone, which made

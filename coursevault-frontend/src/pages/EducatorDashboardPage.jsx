@@ -665,10 +665,17 @@ export default function EducatorDashboardPage() {
                               </button>
                             </div>
                           </div>
+                          {/*
+                            The one place the price badge stays. CourseCard now
+                            hides it by default so no student-facing list shows
+                            a price; here the teacher is reading back a figure
+                            they set themselves, on a page only they can open.
+                          */}
                           <CourseCard
                             course={child}
                             index={i}
                             isMyLearning={false}
+                            showPrice
                             onClick={(id) => navigate(`/course/${id}`)}
                           />
                         </div>

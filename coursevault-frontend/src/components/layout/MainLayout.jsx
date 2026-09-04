@@ -1,8 +1,9 @@
 import React, { useMemo, useState } from 'react';
 import { Outlet, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
-import { Compass, BookOpen, LayoutDashboard, BarChart3, User as UserIcon, LifeBuoy, Home, Search } from 'lucide-react';
+import { Compass, BookOpen, LayoutDashboard, BarChart3, User as UserIcon, LifeBuoy, Home, Search, Image as ImageIcon } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { isStaff } from '../../utils/roles.js';
 import PageTransition from '../ui/PageTransition.jsx';
 import NotificationBell from './NotificationBell.jsx';
 import HelpDeskPanel from './HelpDeskPanel.jsx';
@@ -116,7 +117,7 @@ export default function MainLayout() {
    * nothing, and on Profile it would filter an empty set. Better to show it
    * where it works than to show it everywhere and have it lie.
    */
-  const showSearch = user?.role !== 'educator' && location.pathname === '/home';
+  const showSearch = !isStaff(user) && location.pathname === '/home';
   const [helpOpen, setHelpOpen] = useState(false);
   // Set when the drawer is opened from a ticket notification, so it can land
   // on that thread instead of the list.
@@ -132,11 +133,21 @@ export default function MainLayout() {
     return transitionColors[pathHash % transitionColors.length];
   }, [location.pathname]);
 
-  const navItems = user?.role === 'educator' 
-    ? [
-        { path: '/dashboard', label: 'Dashboard' },
-        { path: '/analytics', label: 'Analytics' },
-      ]
+  /*
+   * Gallery Management is admin-only, so it is appended rather than listed.
+   *
+   * An educator and an admin share this nav, and a tab that 403s on tap is
+   * worse than no tab: the reader cannot tell whether they lack permission or
+   * the app is broken.
+   */
+  const educatorNav = [
+    { path: '/dashboard', label: 'Dashboard' },
+    { path: '/analytics', label: 'Analytics' },
+  ];
+  if (user?.role === 'admin') educatorNav.push({ path: '/gallery', label: 'Gallery' });
+
+  const navItems = isStaff(user)
+    ? educatorNav
     : [
         { path: '/home', label: 'Home' },
         /*
@@ -160,6 +171,7 @@ export default function MainLayout() {
     if (path === '/my-learning') return BookOpen;
     if (path === '/dashboard') return LayoutDashboard;
     if (path === '/analytics') return BarChart3;
+    if (path === '/gallery') return ImageIcon;
     return Compass;
   };
 
@@ -169,7 +181,7 @@ export default function MainLayout() {
         {/* Logo */}
         <div 
           className="relative cursor-pointer group inline-block shrink-0" 
-          onClick={() => navigate(user?.role === 'educator' ? '/dashboard' : '/home')}
+          onClick={() => navigate(isStaff(user) ? '/dashboard' : '/home')}
         >
           <img src="/sv-logo.png" alt="Sharda Vidyapeeth" className="h-10 md:h-12 w-auto" />
         </div>
@@ -313,7 +325,7 @@ export default function MainLayout() {
 
       {helpOpen && (
         <HelpDeskPanel
-          isEducator={user?.role === 'educator'}
+          isEducator={isStaff(user)}
           initialTicketId={helpTicketId}
           onClose={() => {
             setHelpOpen(false);

@@ -11,6 +11,7 @@ import pool from "../config/database.js";
 import { authOnly as authMiddleware } from "../middleware/auth.js";
 import { activeEnrolmentSql } from "../utils/enrollmentAccess.js";
 import { listCategories } from "../constants/courseCategories.js";
+import { classOrderSql } from "../utils/courseOrder.js";
 import { APP_TIMEZONE, todayInAppZone, dayToUtcMs, DAY_MS } from "../utils/appTime.js";
 
 const router = express.Router();
@@ -114,14 +115,83 @@ router.get("/", authMiddleware, async (req, res) => {
         `, [userId, APP_TIMEZONE]);
 
         /*
-         * Enrolled courses with progress.
+         * "Your Classes" — one row per enrolled *class*, not per enrolment.
+         *
+         * Enrolments are sold per subject: a student buys Physics, not "12th
+         * Class". Listing the enrolment rows directly therefore filled the home
+         * screen with "Biology" and "12th Physics (HPBOSE)-2027" — subjects,
+         * with their class relegated to a grey "in NEET" subtitle. Someone
+         * enrolled in three subjects of one class saw that class three times,
+         * never by name.
+         *
+         * So the rows are rolled up to COALESCE(parent, self): a subject folds
+         * into its class, a course with no parent stands as its own class, and
+         * a student who bought two subjects of the same class gets one card.
+         * Tapping it opens the class, which lists its subjects — the same route
+         * "More courses" already uses, so Home and Explore agree about what a
+         * class is.
          *
          * Progress is computed rather than stored: there is no progress column
          * on enrollments, and an earlier attempt to select one made every
-         * request fail. Counting distinct watched videos against the course's
-         * total gives the same figure from rows that exist.
+         * request fail. Counting distinct watched videos against the total
+         * gives the same figure from rows that exist. Summed across the
+         * subjects the student actually holds, so the bar answers "how far
+         * through my material am I" rather than counting videos they never
+         * bought and can therefore never watch — a bar that could not reach
+         * 100% would read as the student being permanently behind.
          */
         const courses = await pool.query(`
+            WITH mine AS (
+                SELECT
+                    c.id AS course_id,
+                    /*
+                     * The parent join carries is_active, so an archived class
+                     * does not swallow its subjects: with no live parent the
+                     * subject falls back to standing on its own. Losing a card
+                     * for a course they paid for is the one outcome worse than
+                     * showing it at the wrong level.
+                     */
+                    COALESCE(p.id, c.id) AS class_id,
+                    e.enrolled_at,
+                    e.expires_at
+                  FROM enrollments e
+                  JOIN courses c ON c.id = e.course_id
+                  LEFT JOIN courses p
+                         ON p.id = c.parent_course_id AND p.is_active = true
+                 WHERE e.user_id = $1
+                   AND ${activeEnrolmentSql('e')}
+                   AND c.is_active = true
+            ),
+            agg AS (
+                SELECT
+                    class_id,
+                    /* The newest enrolment represents the class. It is only the
+                       final tie-break now that the teacher's arrangement leads,
+                       so it separates two classes placed at the same position
+                       and decides nothing above that. */
+                    MAX(enrolled_at) AS enrolled_at,
+                    /* Soonest expiry governs the class. It is the first date
+                       on which the student loses something. */
+                    MIN(expires_at) AS expires_at,
+                    COUNT(*) FILTER (WHERE course_id <> class_id)::int AS subject_count,
+                    COALESCE(SUM(
+                        (SELECT COUNT(*) FROM modules m
+                          WHERE m.course_id = mine.course_id AND m.is_active = true)
+                    ), 0)::int AS module_count,
+                    COALESCE(SUM(
+                        (SELECT COUNT(*)
+                           FROM content_items ci
+                           JOIN modules m ON ci.id = ANY(m.content_ids)
+                          WHERE m.course_id = mine.course_id AND ci.is_active = true
+                            AND ci.content_type = 'video' AND ci.status = 'ready')
+                    ), 0)::int AS video_count,
+                    COALESCE(SUM(
+                        (SELECT COUNT(DISTINCT vp.content_id) FROM video_progress vp
+                          WHERE vp.user_id = $1 AND vp.course_id = mine.course_id)
+                    ), 0)::int AS videos_watched
+                  FROM mine
+                 GROUP BY class_id
+            )
             SELECT
                 c.id,
                 c.title,
@@ -129,27 +199,39 @@ router.get("/", authMiddleware, async (req, res) => {
                 c.thumbnail_url,
                 c.category,
                 c.price,
-                e.enrolled_at,
-                e.expires_at,
-                parent.title AS parent_title,
-                (SELECT COUNT(*)::int FROM modules m
-                  WHERE m.course_id = c.id AND m.is_active = true) AS module_count,
-                (SELECT COUNT(*)::int
-                   FROM content_items ci
-                   JOIN modules m ON ci.id = ANY(m.content_ids)
-                  WHERE m.course_id = c.id AND ci.is_active = true
-                    AND ci.content_type = 'video' AND ci.status = 'ready') AS video_count,
-                (SELECT COUNT(DISTINCT vp.content_id)::int FROM video_progress vp
-                  WHERE vp.user_id = $1 AND vp.course_id = c.id) AS videos_watched,
-                (SELECT COUNT(DISTINCT e2.user_id)::int FROM enrollments e2
-                  WHERE e2.course_id = c.id AND e2.status = 'active') AS student_count
-            FROM enrollments e
-            JOIN courses c ON c.id = e.course_id
-            LEFT JOIN courses parent ON parent.id = c.parent_course_id
-            WHERE e.user_id = $1
-              AND ${activeEnrolmentSql('e')}
-              AND c.is_active = true
-            ORDER BY e.enrolled_at DESC
+                agg.enrolled_at,
+                agg.expires_at,
+                agg.subject_count,
+                agg.module_count,
+                agg.video_count,
+                agg.videos_watched,
+                /*
+                 * Everyone in the class or in any of its subjects, counted
+                 * once. Left as the class's own enrolments it would read "1"
+                 * under a class with two hundred students spread across its
+                 * subjects.
+                 */
+                (SELECT COUNT(DISTINCT e2.user_id)::int
+                   FROM enrollments e2
+                   JOIN courses c2 ON c2.id = e2.course_id
+                  WHERE e2.status = 'active'
+                    AND (c2.id = c.id OR c2.parent_course_id = c.id)) AS student_count
+              FROM agg
+              JOIN courses c ON c.id = agg.class_id
+             /*
+              * The teacher's arrangement, here too.
+              *
+              * This list was ordered by enrolment date — a sort the student
+              * side invented for itself, which is exactly what the two lists on
+              * this screen must stop doing. A class sat in one position under
+              * "Your Classes" and a different one under "More courses", and
+              * neither matched the dashboard.
+              *
+              * Enrolment date survives only as the last tie-break, below the
+              * three shared keys, so it decides nothing the teacher has an
+              * opinion about.
+              */
+             ORDER BY ${classOrderSql('c')}, agg.enrolled_at DESC
         `, [userId]);
 
         /*
@@ -184,31 +266,43 @@ router.get("/", authMiddleware, async (req, res) => {
         `, [userId]);
 
         /*
-         * Slides for the carousel at the top of the home screen.
+         * Slides for the carousel, from the gallery an admin curates.
          *
-         * Published top-level courses that have a thumbnail — the carousel is
-         * a picture strip, and a slide with no picture is a grey rectangle
-         * with a title on it, which looks broken rather than minimal.
+         * This was "every published top-level course that has a thumbnail,
+         * newest first". It filled the space, but nobody chose what went there:
+         * the most prominent surface in the app changed whenever a teacher
+         * uploaded a course cover, and an admin who wanted a different banner
+         * had no way to say so except by editing a course.
          *
-         * Not restricted to enrolled courses: this is the discovery surface,
-         * and a student who has joined nothing yet is exactly who most needs
-         * to see what is on offer. Nothing sensitive is exposed — the title
-         * and cover of a published course are already public on Explore.
+         * Course thumbnails can no longer reach this list at all. The join to
+         * courses supplies only the linked class's title and the enrolled flag,
+         * so a banner still reads as a shortcut into that class — the image
+         * itself is always the uploaded one.
+         *
+         * Left empty when nothing has been uploaded. There is deliberately no
+         * fallback to course images: a silent fallback is how the old behaviour
+         * would come back without anyone noticing it had.
          */
         const featured = await pool.query(`
-            SELECT c.id, c.title, c.thumbnail_url, c.category, c.price,
-                   EXISTS (
+            SELECT g.id,
+                   g.image_url AS thumbnail_url,
+                   g.link_course_id,
+                   /* The caption if the admin wrote one, otherwise the linked
+                      class's name, so a banner is never an unlabelled image. */
+                   COALESCE(g.caption, c.title) AS title,
+                   c.category,
+                   CASE WHEN c.id IS NULL THEN false ELSE EXISTS (
                        SELECT 1 FROM enrollments e
                         WHERE e.course_id = c.id AND e.user_id = $1
                           AND ${activeEnrolmentSql('e')}
-                   ) AS enrolled
-              FROM courses c
-             WHERE c.is_active = true
-               AND c.status = 'published'
-               AND c.parent_course_id IS NULL
-               AND c.thumbnail_url IS NOT NULL
-               AND c.thumbnail_url <> ''
-             ORDER BY c.created_at DESC
+                   ) END AS enrolled
+              FROM gallery_images g
+              LEFT JOIN courses c
+                     ON c.id = g.link_course_id
+                    AND c.is_active = true
+                    AND c.status = 'published'
+             WHERE g.is_active = true
+             ORDER BY g.sort_order ASC, g.created_at DESC
              LIMIT 8
         `, [userId]);
 
@@ -294,7 +388,12 @@ router.get("/", authMiddleware, async (req, res) => {
                 * literal, and one would end the string mid-query.)
                 */
                AND c.parent_course_id IS NULL
-             ORDER BY c.created_at DESC
+             /*
+              * "More courses" — the list in the report. Newest-first is the
+              * ordering the teacher explicitly did not choose; their
+              * arrangement is in display_order and was being discarded here.
+              */
+             ORDER BY ${classOrderSql('c')}
         `, [userId]);
 
         const days = activity.rows.map((r) => r.day);

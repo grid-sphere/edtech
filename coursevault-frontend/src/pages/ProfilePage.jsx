@@ -7,6 +7,7 @@ import { fetchAPI } from '../services/api';
 import AppearanceButton from '../components/ui/AppearanceButton.jsx';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { isStaff } from '../utils/roles.js';
 import Button from '../components/ui/Button';
 import PasswordInput from '../components/ui/PasswordInput';
 import { BOARDS, STATES } from '../utils/studentOptions';
@@ -427,7 +428,7 @@ export default function ProfilePage() {
             seeing it — even disabled — would suggest they had a say. The
             server enforces the same rule; this is the label on it.
           */}
-          {user.role === 'educator' && (
+          {isStaff(user) && (
             <SettingCard
               title="Platform appearance"
               description="The default colours for everyone, students included."

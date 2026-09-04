@@ -4,13 +4,19 @@ import Button from '../ui/Button.jsx';
 import { BASE_URL, uploadVideoWithProgress } from '../../services/api.js';
 import { uploadVideoChunked } from '../../services/chunkedUpload.js';
 import { formatSize } from '../../utils/format.js';
-
-const MAX_VIDEO_BYTES = 3 * 1024 * 1024 * 1024; // matches the backend's videoUpload limit
-const MAX_FILE_BYTES = 50 * 1024 * 1024;        // matches the backend's memory upload limit
-
-// Above this a single POST is a liability: one dropped connection loses the
-// lot. Below it the chunk bookkeeping costs more than it saves.
-const CHUNKED_THRESHOLD = 50 * 1024 * 1024;
+/*
+ * Imported rather than declared here.
+ *
+ * These were local constants annotated "matches the backend's videoUpload
+ * limit" — a claim nothing checked. The same number was written out in four
+ * backend files and this one, so raising the ceiling meant finding all five,
+ * and missing this one would have meant the browser refusing a file the server
+ * would have accepted, with the dialog stating a limit that was no longer real.
+ *
+ * The "up to N GB" line below is derived from MAX_VIDEO_BYTES, so the text and
+ * the rule cannot disagree.
+ */
+import { MAX_VIDEO_BYTES, MAX_FILE_BYTES, CHUNKED_THRESHOLD } from '../../constants/uploadLimits.js';
 
 
 export default function ContentModal({ isOpen, onClose, moduleId, folderId, onSave, initialTab = 'video' }) {

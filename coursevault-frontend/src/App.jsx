@@ -8,6 +8,7 @@ import EducatorDashboardPage from './pages/EducatorDashboardPage.jsx';
 import AnalyticsPage from './pages/AnalyticsPage.jsx';
 import ProfilePage from './pages/ProfilePage.jsx';
 import DeleteAccountPage from './pages/DeleteAccountPage.jsx';
+import GalleryManagementPage from './pages/GalleryManagementPage.jsx';
 import PrivacyPolicyPage from './pages/PrivacyPolicyPage.jsx';
 import StudentHomePage from './pages/StudentHomePage.jsx';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
@@ -87,6 +88,10 @@ export default function App() {
               {/* Inside the protected routes: closing an account
                   requires being signed in as that account. */}
               <Route path="/deleteaccount" element={<DeleteAccountPage />} />
+              {/* Admin only. The page checks the role and the API enforces it —
+                  the route itself is left open so a non-admin who follows a
+                  link reads an explanation rather than being bounced. */}
+              <Route path="/gallery" element={<GalleryManagementPage />} />
             </Route>
             
             {/* Catch-all Redirect */}

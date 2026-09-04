@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { Play, Plus, Edit, Trash2, Users, Infinity as InfinityIcon } from 'lucide-react';
+import { Play, Plus, Edit, Trash2, Users } from 'lucide-react';
 import Badge from '../components/ui/Badge.jsx';
 import CourseAccordion from '../components/course/CourseAccordion.jsx';
 import CourseCard from '../components/course/CourseCard.jsx';
@@ -10,9 +10,13 @@ import ModuleModal from '../components/educator/ModuleModal.jsx';
 import ContentModal from '../components/educator/ContentModal.jsx';
 import EnrollmentsModal from '../components/educator/EnrollmentsModal.jsx';
 import AnnouncementModal from '../components/educator/AnnouncementModal.jsx';
+import CircularProgress from '../components/ui/CircularProgress.jsx';
 import { fetchAPI } from '../services/api.js';
 import { getBgColor } from '../utils/format.js';
+import { categoryLabel } from '../constants/courseCategories.js';
+import { useCategories } from '../hooks/useCategories.js';
 import { useAuth } from '../context/AuthContext.jsx';
+import { isStaff } from '../utils/roles.js';
 
 const loadRazorpayScript = () => {
   return new Promise((resolve) => {
@@ -28,6 +32,16 @@ export default function CourseDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
+  /*
+   * Called up here, above the loading and not-found early returns, because a
+   * hook after a conditional return runs on some renders and not others.
+   *
+   * It is needed because the badge was printing course.category raw — the
+   * screenshot shows "hp_board" where every other surface in the app says
+   * "HP Board". categoryLabel can only resolve a custom tag against the fetched
+   * list; with the built-ins alone it falls back to the slug.
+   */
+  const { categories } = useCategories();
 
   const [course, setCourse] = useState(null);
   const [modules, setModules] = useState([]);
@@ -54,7 +68,7 @@ export default function CourseDetailPage() {
   // Which course the access belongs to — often the parent class, not this page.
   const [accessCourseId, setAccessCourseId] = useState(null);
 
-  const isCreator = user?.role === 'educator' && (course?.isCreator || user?.id === course?.educator_id);
+  const isCreator = isStaff(user) && (course?.isCreator || user?.id === course?.educator_id);
   const canAccessContent = isCreator || isEnrolled;
 
   // Educator States
@@ -98,7 +112,7 @@ export default function CourseDetailPage() {
       // course contained — worst on a phone, where one open module can fill
       // the whole viewport.
 
-      const enrolled = user?.role === 'educator' ? true : !!data.course.isEnrolled;
+      const enrolled = isStaff(user) ? true : !!data.course.isEnrolled;
       setIsEnrolled(enrolled);
 
       // 🌟 FIX: same stale-gate issue as onContentClick — always attempt to
@@ -284,7 +298,7 @@ export default function CourseDetailPage() {
       // Home, not Explore: that tab is hidden for students now. Only an
       // educator can reach this delete, so the second branch is a safety net
       // rather than a path anyone walks.
-      navigate(user?.role === 'educator' ? '/dashboard' : '/home');
+      navigate(isStaff(user) ? '/dashboard' : '/home');
     } catch (err) {
       alert(err.message || 'Delete failed');
     }
@@ -300,22 +314,79 @@ export default function CourseDetailPage() {
     }
   };
 
+  /*
+   * Remaining access, as one short line for the card.
+   *
+   * This was a separate full-width banner between the header and the
+   * curriculum. It said the same thing it says now, but it cost a whole block
+   * of vertical space to say it, and with the progress bar below it the student
+   * scrolled past two strips of chrome before reaching module 1.
+   *
+   * Deliberately not gated on isEnrolled. Once access lapses the server
+   * correctly reports isEnrolled as false, so gating on it would hide the
+   * message at the exact moment it matters — the student would find the enrol
+   * button back with no explanation. accessExpiresAt still arrives because the
+   * enrolments list keeps lapsed rows on purpose.
+   */
+  const access = (() => {
+    if (isCreator || !(isEnrolled || accessExpiresAt)) return null;
+    if (!accessExpiresAt) return { text: 'Lifetime access', tone: 'bg-white', expired: false };
+
+    const expires = new Date(accessExpiresAt);
+    const daysLeft = Math.ceil((expires - new Date()) / 86400000);
+    if (daysLeft <= 0) {
+      return {
+        text: `Access ended ${expires.toLocaleDateString()} — re-enrol to continue, your progress is kept.`,
+        tone: 'bg-[#F26B4D] text-white',
+        expired: true,
+      };
+    }
+    // Days are the useful unit near the end; months read better far out.
+    const remaining = daysLeft > 60
+      ? `${Math.round(daysLeft / 30)} months left`
+      : `${daysLeft} day${daysLeft === 1 ? '' : 's'} left`;
+    return {
+      text: `${remaining} — access until ${expires.toLocaleDateString()}.`,
+      tone: daysLeft <= 14 ? 'bg-[#F9E076]' : 'bg-white',
+      expired: false,
+    };
+  })();
+
+  // The ring replaces the old horizontal bar in the curriculum header.
+  const showProgress = isEnrolled && !isCreator;
+
   return (
     <div className="max-w-5xl mx-auto pb-20">
-      <button
-        onClick={() => navigate(-1)}
-        className="flex items-center justify-center w-9 h-9 md:w-auto md:h-auto mb-4 md:mb-8 bg-white border-2 border-black rounded-full md:rounded-lg md:px-4 md:py-2 font-bold text-xs uppercase tracking-widest shadow-[2px_2px_0px_0px_#111] hover:bg-[#F9E076] transition-colors"
-      >
-        <span className="md:hidden text-base leading-none normal-case">←</span>
-        <span className="hidden md:inline">← Back</span>
-      </button>
+      {/* ---------------------------------------------------------- one card
 
-      <div className="relative mb-4 md:mb-12">
-        <div className="absolute inset-0 bg-[#111] rounded-2xl md:rounded-[24px] translate-x-1.5 translate-y-1.5 md:translate-x-3 md:translate-y-3 z-0"></div>
-        <div className={`relative z-10 ${getBgColor(course.id)} border-2 border-black rounded-2xl md:rounded-[24px] p-3.5 md:p-12 shadow-[3px_3px_0px_0px_#111] md:shadow-[4px_4px_0px_0px_#111]`}>
-          <div className="flex justify-between items-start gap-2 mb-2 md:mb-6">
-            <Badge colorClass="bg-white">{course.category || 'General'}</Badge>
-            <div className="flex items-center gap-2 shrink-0">
+          Back arrow, title, board badge, actions, remaining access and the
+          progress ring, in a single block.
+
+          These were four stacked things: a floating back button, a large
+          header card, a full-width access banner, and a progress bar living in
+          the Curriculum heading. Each was reasonable alone; together they cost
+          most of a phone screen before the first module, and the reader had to
+          scroll to learn the course had any content at all.
+
+          Spacing follows the home screen — gap-2 between cards, mb-2 under a
+          heading — rather than the mb-8/md:mb-12 rhythm this page used, which
+          was built for a desktop hero and never revisited for a phone.        */}
+      <div className={`relative mb-3 ${getBgColor(course.id)} border-2 border-black rounded-2xl p-3 md:p-4 shadow-[3px_3px_0px_0px_#111]`}>
+        <div className="flex items-start gap-2.5">
+          <button
+            onClick={() => navigate(-1)}
+            aria-label="Back"
+            className="shrink-0 w-8 h-8 md:w-9 md:h-9 flex items-center justify-center bg-white border-2 border-black rounded-full font-bold shadow-[2px_2px_0px_0px_#111] hover:bg-[#F9E076] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all"
+          >
+            <span className="text-base leading-none">←</span>
+          </button>
+
+          <div className="min-w-0 flex-1">
+            <h1 className="text-base md:text-2xl font-black leading-tight break-words">{course.title}</h1>
+            <div className="flex flex-wrap items-center gap-1.5 mt-1">
+              {/* Resolved against the fetched list, so a custom tag reads
+                  "HP Board" rather than the stored slug "hp_board". */}
+              <Badge colorClass="bg-white">{categoryLabel(course.category, categories) || 'General'}</Badge>
               {isCreator && <Badge colorClass="bg-[#F9E076]">Creator View</Badge>}
               {/* Destructive, and rare — it does not belong in the row of
                   everyday actions where it was one mis-tap from Students. */}
@@ -324,32 +395,22 @@ export default function CourseDetailPage() {
                   onClick={handleDeleteCourse}
                   title="Delete course"
                   aria-label="Delete course"
-                  className="w-8 h-8 shrink-0 flex items-center justify-center bg-white text-red-500 border-2 border-black rounded-lg shadow-[2px_2px_0px_0px_#111] hover:bg-red-50 active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all"
+                  className="w-7 h-7 shrink-0 flex items-center justify-center bg-white text-red-500 border-2 border-black rounded-lg shadow-[2px_2px_0px_0px_#111] hover:bg-red-50 active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all"
                 >
-                  <Trash2 size={15} strokeWidth={2.5} />
+                  <Trash2 size={13} strokeWidth={2.5} />
                 </button>
               )}
             </div>
           </div>
-          <h1 className="text-xl md:text-6xl font-black leading-tight mb-1 md:mb-4">{course.title}</h1>
-          {course.description?.trim() && (
-            <p className="text-xs md:text-lg font-bold text-black/70 mb-3 md:mb-8 max-w-2xl line-clamp-3 md:line-clamp-none">
-              {course.description}
-            </p>
-          )}
+        </div>
 
-          {/*
-            A 2-up grid on mobile, inline row from md.
+        {course.description?.trim() && (
+          <p className="text-[11px] md:text-sm font-bold text-black/70 mt-2 line-clamp-2">
+            {course.description}
+          </p>
+        )}
 
-            These were four buttons of four different heights: the shared
-            Button component's base is `px-6 py-4 text-xl` and each caller
-            passed `py-1.5 text-sm` to shrink it. Those are conflicting
-            Tailwind utilities, so which one wins depends on the order they
-            happen to appear in the generated stylesheet, not on the order in
-            the className string. Sizing them here directly, on plain buttons,
-            makes the result predictable and every button identical.
-          */}
-          <div className="grid grid-cols-2 gap-2 md:flex md:flex-wrap md:gap-3">
+        <div className="mt-2.5 grid grid-cols-2 gap-2 md:flex md:flex-wrap md:gap-3">
             {isCreator ? (
               <>
                 <button
@@ -410,72 +471,43 @@ export default function CourseDetailPage() {
               </button>
             )}
           </div>
-        </div>
-      </div>
 
-      {/*
-        Remaining access, shown where the student is actually working rather
-        than only back on My Learning. Placed above the curriculum so it is
-        read before they start, not discovered when something stops opening.
-      */}
-      {/*
-        Not gated on isEnrolled.
+        {/*
+          Access and progress share the last row.
 
-        Once access lapses the server correctly reports isEnrolled as false, so
-        gating this on it would hide the banner at the exact moment it matters —
-        the student would just find the enrol button back with no explanation of
-        why they lost access. accessExpiresAt still arrives because the
-        enrolments list deliberately keeps lapsed rows.
-      */}
-      {!isCreator && (isEnrolled || accessExpiresAt) && (() => {
-        // Lifetime access gets its own line rather than an absent one.
-        if (!accessExpiresAt) {
-          return (
-            <div className="flex items-center gap-2 mb-4 md:mb-6 px-3 py-2.5 md:px-4 md:py-3 border-2 border-black rounded-xl font-bold bg-[#A7E2D1] shadow-[3px_3px_0px_0px_#111]">
-              <InfinityIcon size={16} strokeWidth={3} className="shrink-0" />
-              <span className="text-xs md:text-sm">Lifetime access — this course never expires.</span>
-            </div>
-          );
-        }
-
-        const expires = new Date(accessExpiresAt);
-        const msLeft = expires - new Date();
-        const daysLeft = Math.ceil(msLeft / 86400000);
-        const expired = msLeft <= 0;
-
-        // Days are the useful unit near the end; months read better far out.
-        const remaining =
-          daysLeft > 60
-            ? `${Math.round(daysLeft / 30)} months left`
-            : `${daysLeft} day${daysLeft === 1 ? '' : 's'} left`;
-
-        return (
-          <div
-            className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4 md:mb-6 px-3 py-2.5 md:px-4 md:py-3 border-2 border-black rounded-xl font-bold shadow-[3px_3px_0px_0px_#111] ${
-              expired
-                ? 'bg-[#F26B4D] text-white'
-                : daysLeft <= 14
-                ? 'bg-[#F9E076]'
-                : 'bg-white'
-            }`}
-          >
-            <span className="text-xs md:text-sm">
-              {expired
-                ? `Your access ended on ${expires.toLocaleDateString()}. Re-enrol to continue — your progress is kept.`
-                : `${remaining} — access until ${expires.toLocaleDateString()}.`}
-            </span>
-            {expired && (
-              <button
-                onClick={() => handleEnroll(accessCourseId || course.id)}
-                disabled={isEnrolling}
-                className="shrink-0 h-9 px-4 bg-white text-black border-2 border-black rounded-lg text-sm font-bold hover:bg-[#F9E076] transition-colors disabled:opacity-60"
-              >
-                {isEnrolling ? 'Processing...' : 'Renew access'}
-              </button>
+          The ring sits here rather than in the Curriculum heading, where a
+          horizontal bar competed with the word "Curriculum" for the same line
+          and pushed the heading into its own strip of vertical space.
+        */}
+        {(access || showProgress) && (
+          <div className="flex items-center gap-2.5 mt-2.5">
+            {access && (
+              <div className={`flex-1 min-w-0 flex flex-wrap items-center gap-2 px-2.5 py-1.5 border-2 border-black rounded-xl font-bold ${access.tone}`}>
+                <span className="text-[11px] md:text-sm">{access.text}</span>
+                {access.expired && (
+                  <button
+                    onClick={() => handleEnroll(accessCourseId || course.id)}
+                    disabled={isEnrolling}
+                    className="shrink-0 h-7 px-2.5 bg-white text-black border-2 border-black rounded-lg text-[11px] font-bold hover:bg-[#F9E076] transition-colors disabled:opacity-60"
+                  >
+                    {isEnrolling ? '...' : 'Renew'}
+                  </button>
+                )}
+              </div>
+            )}
+            {/*
+              Round, per the sketch. CircularProgress already draws the ring and
+              the number, so this is the existing component rather than a second
+              implementation of the same thing.
+            */}
+            {showProgress && (
+              <div className="shrink-0 ml-auto">
+                <CircularProgress size="small" percentage={courseProgress} color="#F26B4D" />
+              </div>
             )}
           </div>
-        );
-      })()}
+        )}
+      </div>
 
       {/* ------------------------------------------------------------ subjects
 
@@ -497,7 +529,7 @@ export default function CourseDetailPage() {
       {paymentNotice && (
         <div
           role="status"
-          className={`mb-6 p-4 border-[3px] border-black rounded-2xl font-bold shadow-[4px_4px_0px_0px_#111] ${
+          className={`mb-3 p-3 border-2 border-black rounded-xl font-bold text-xs md:text-sm shadow-[3px_3px_0px_0px_#111] ${
             paymentNotice === 'success' ? 'bg-[#A7E2D1]' : 'bg-red-100 text-red-800'
           }`}
         >
@@ -508,15 +540,15 @@ export default function CourseDetailPage() {
       )}
 
       {subjects.length > 0 && (
-        <div className="mb-8 md:mb-12">
-          <div className="flex items-baseline justify-between gap-3 mb-4 md:mb-6">
-            <h2 className="text-2xl md:text-3xl font-black shrink-0">Subjects</h2>
+        <div className="mb-4">
+          <div className="flex items-baseline justify-between gap-3 mb-2">
+            <h2 className="text-lg md:text-2xl font-black shrink-0">Subjects</h2>
             <span className="text-xs font-bold uppercase tracking-widest text-gray-500">
               {subjects.length} in this class
             </span>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6 items-start">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2 md:gap-4 items-start">
             {subjects.map((s, i) => (
               <CourseCard
                 key={s.id}
@@ -543,29 +575,22 @@ export default function CourseDetailPage() {
         failed to load rather than one that was never meant to have content.
         A subject, and a class that holds material directly, both still show it.
       */}
-      <div className={`flex items-center justify-between mb-4 md:mb-8 gap-3 md:gap-6 ${
+      {/*
+        Just the heading now.
+
+        "Your Progress" and its horizontal bar used to share this row; the bar
+        is the ring in the card above, so the heading no longer needs a strip of
+        its own. mb-2 matches the home screen, where a heading sits this close
+        to the list it introduces.
+      */}
+      <div className={`mb-2 ${
         subjects.length > 0 && modules.length === 0 ? 'hidden' : ''
       }`}>
-        <h2 className="text-2xl md:text-3xl font-black shrink-0">Curriculum</h2>
-
-        {isEnrolled && !isCreator && (
-          <div className="flex items-center gap-3 flex-1 max-w-sm">
-            <div className="flex-1">
-              <div className="flex justify-between items-center mb-1">
-                <span className="text-xs font-black uppercase tracking-widest text-gray-500">Your Progress</span>
-                <span className="text-xs font-black">{courseProgress}%</span>
-              </div>
-              <div className="h-3 w-full bg-white border-2 border-black rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-[#A7E2D1] transition-all duration-500"
-                  style={{ width: `${courseProgress}%` }}
-                />
-              </div>
-            </div>
-          </div>
-        )}
+        <h2 className="text-lg md:text-2xl font-black">Curriculum</h2>
       </div>
-      <div className="flex flex-col gap-6">
+      {/* gap-2, as between the class rows on home. gap-6 here was most of a
+          module card's height of empty space between every pair. */}
+      <div className="flex flex-col gap-2">
         {modules.map((module, moduleIndex) => (
           <CourseAccordion
             key={module.id}

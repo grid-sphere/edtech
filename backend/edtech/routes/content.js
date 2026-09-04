@@ -1,4 +1,9 @@
 import express from "express";
+import {
+    MAX_VIDEO_BYTES, MAX_FILE_BYTES, MAX_CHUNK_BYTES,
+    MULTIPART_PART_SIZE, MULTIPART_MAX_PARTS, MULTIPART_URL_TTL_SECONDS,
+    describeLimit,
+} from "../constants/uploadLimits.js";
 import multer from "multer";
 import crypto from "crypto";
 import path from "path";
@@ -106,10 +111,10 @@ const FFPROBE_PATH = await resolveBinary("@ffprobe-installer/ffprobe", "ffprobe"
 if (!fs.existsSync(TEMP_VIDEO_DIR)) fs.mkdirSync(TEMP_VIDEO_DIR, { recursive: true });
 
 // Small assets (PDFs/images) stay in memory — fine at these sizes.
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_FILE_BYTES } });
 
 // 🚀 RESTORED: Videos stream straight to disk instead of buffering into RAM.
-// At 3GB, memoryStorage would need 3GB of RAM per concurrent upload — this
+// At 7GB, memoryStorage would need 7GB of RAM per concurrent upload — this
 // was reverted back to memoryStorage/500MB at some point and needs to stay
 // disk-based for large uploads to be safe.
 const videoUpload = multer({
@@ -117,7 +122,7 @@ const videoUpload = multer({
         destination: (req, file, cb) => cb(null, TEMP_VIDEO_DIR),
         filename: (req, file, cb) => cb(null, `raw_${crypto.randomUUID()}${getFileExtension(file.originalname)}`)
     }),
-    limits: { fileSize: 3 * 1024 * 1024 * 1024 } // 3GB Limit for videos
+    limits: { fileSize: MAX_VIDEO_BYTES }
 });
 
 
@@ -293,7 +298,7 @@ router.post("/upload", authMiddleware, handleUpload(upload.single("file"), 50 * 
 });
 
 // POST /api/content/upload-video
-router.post("/upload-video", authMiddleware, handleUpload(videoUpload.single("file"), 3 * 1024 * 1024 * 1024), async (req, res) => {
+router.post("/upload-video", authMiddleware, handleUpload(videoUpload.single("file"), MAX_VIDEO_BYTES), async (req, res) => {
     // Track the raw disk path Multer wrote to, so it can be cleaned up on any early-exit path.
     let rawDiskPath = null;
     try {
@@ -320,7 +325,7 @@ router.post("/upload-video", authMiddleware, handleUpload(videoUpload.single("fi
         }
 
         // 🚀 RESTORED: File already lives on disk — hash it by streaming
-        // instead of loading a buffer, so a 3GB file never sits in RAM.
+        // instead of loading a buffer, so a multi-gigabyte file never sits in RAM.
         const fileHash = await hashFileFromDisk(rawDiskPath);
         const extension = getFileExtension(file.originalname);
 
@@ -476,7 +481,7 @@ router.get("/stream-image", async (req, res) => {
 // CHUNKED UPLOAD (large videos, straight to this server)
 // ============================================================
 //
-// One 3GB POST is fragile and unhelpful: a dropped connection at 90% loses
+// One multi-gigabyte POST is fragile and unhelpful: a dropped connection at 90% loses
 // everything, a proxy or body limit anywhere in the chain kills it outright,
 // and a single TCP stream rarely saturates the uplink.
 //
@@ -492,10 +497,11 @@ router.get("/stream-image", async (req, res) => {
 const CHUNK_DIR = path.join(TEMP_VIDEO_DIR, "chunks");
 if (!fs.existsSync(CHUNK_DIR)) fs.mkdirSync(CHUNK_DIR, { recursive: true });
 
-// Generous ceiling; the client picks the real size.
+// Generous ceiling; the client picks the real size. This bounds ONE chunk,
+// not the file — the total is checked at assembly, where it is knowable.
 const chunkUpload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 32 * 1024 * 1024 },
+    limits: { fileSize: MAX_CHUNK_BYTES },
 });
 
 /**
@@ -595,9 +601,36 @@ router.post("/upload-finish", authMiddleware, async (req, res) => {
             });
         }
 
+        /*
+         * The size limit, actually enforced.
+         *
+         * Until now the chunked path had no total-size check anywhere on the
+         * server. multer bounds one chunk at a time, and nothing added them up,
+         * so the advertised ceiling lived exclusively in the browser — where it
+         * is a hint, not a limit. Anyone posting chunks directly could store a
+         * file of any size, and the "reject oversized videos" requirement was
+         * simply not true of the path this modal actually uses.
+         *
+         * Summed from the parts before they are joined rather than from the
+         * assembled file afterwards: stat is metadata only, so this costs a few
+         * hundred syscalls and no reading, and it refuses the upload before
+         * writing a second full-size copy to disk. Checking after assembly would
+         * mean spending the disk to discover we did not want it.
+         */
+        let totalBytes = 0;
+        for (let i = 0; i < expected; i++) {
+            totalBytes += fs.statSync(path.join(dir, `${i}.part`)).size;
+        }
+        if (totalBytes > MAX_VIDEO_BYTES) {
+            fs.rmSync(dir, { recursive: true, force: true });
+            return res.status(413).json({
+                error: `Videos must be ${describeLimit()} or smaller.`,
+            });
+        }
+
         assembledPath = path.join(TEMP_VIDEO_DIR, `assembled_${uploadId}${getFileExtension(fileName || ".mp4")}`);
 
-        // Streamed append: concatenating 3GB through Buffers would blow the heap.
+        // Streamed append: concatenating gigabytes through Buffers would blow the heap.
         await new Promise((resolve, reject) => {
             const out = fs.createWriteStream(assembledPath);
             out.on("error", reject);
@@ -691,7 +724,7 @@ router.post("/upload-cancel", authMiddleware, async (req, res) => {
 // ============================================================
 //
 // The ordinary /upload-video route sends the file to this server first, which
-// writes it to disk and only then pushes it onward. Every byte of a 3GB file
+// writes it to disk and only then pushes it onward. Every byte of a large file
 // therefore crosses the network twice and is limited by this one machine's
 // inbound bandwidth.
 //
@@ -705,8 +738,6 @@ router.post("/upload-cancel", authMiddleware, async (req, res) => {
 // exposing the ETag header; without ExposeHeaders the browser cannot read the
 // part ETags and the upload cannot be completed.
 
-const MULTIPART_PART_SIZE = 64 * 1024 * 1024; // R2 minimum is 5MB; 64MB keeps the part count sane for 3GB
-const MULTIPART_MAX_PARTS = 10000;            // S3/R2 hard limit
 
 // POST /api/content/upload-init
 router.post("/upload-init", authMiddleware, async (req, res) => {
@@ -721,8 +752,8 @@ router.post("/upload-init", authMiddleware, async (req, res) => {
         if (!fileName || !Number.isFinite(size) || size <= 0) {
             return res.status(400).json({ error: "fileName and a positive fileSize are required" });
         }
-        if (size > 3 * 1024 * 1024 * 1024) {
-            return res.status(413).json({ error: "Videos must be 3GB or smaller." });
+        if (size > MAX_VIDEO_BYTES) {
+            return res.status(413).json({ error: `Videos must be ${describeLimit()} or smaller.` });
         }
         if (mimeType && !String(mimeType).startsWith("video/")) {
             return res.status(400).json({ error: "That file is not a video." });
@@ -734,7 +765,7 @@ router.post("/upload-init", authMiddleware, async (req, res) => {
         }
 
         // Random key: the content hash is not known until the bytes exist, and
-        // hashing 3GB in the browser before uploading would cost more than it
+        // hashing a multi-gigabyte file in the browser before uploading would cost more than it
         // saves. The row is keyed by hash later, once the server has the file.
         const key = `uploads/raw/${crypto.randomUUID()}${getFileExtension(fileName)}`;
 
@@ -745,7 +776,9 @@ router.post("/upload-init", authMiddleware, async (req, res) => {
         }));
 
         // Presigned up front so the browser never has to come back mid-upload.
-        // Six hours covers a slow connection pushing 3GB.
+        // See MULTIPART_URL_TTL_SECONDS: sized for the slowest link likely to push a
+        // full-size file, since a URL that expires mid-upload fails parts that have
+        // not started yet.
         const urls = [];
         for (let partNumber = 1; partNumber <= partCount; partNumber++) {
             urls.push(await getSignedUrl(
@@ -756,7 +789,7 @@ router.post("/upload-init", authMiddleware, async (req, res) => {
                     UploadId: created.UploadId,
                     PartNumber: partNumber,
                 }),
-                { expiresIn: 6 * 60 * 60 }
+                { expiresIn: MULTIPART_URL_TTL_SECONDS }
             ));
         }
 
@@ -874,7 +907,7 @@ router.post("/upload-abort", authMiddleware, async (req, res) => {
 /**
  * Pull the uploaded object down and run it through the existing pipeline.
  *
- * Streamed to disk rather than buffered: a 3GB Buffer would exhaust the heap.
+ * Streamed to disk rather than buffered: a multi-gigabyte Buffer would exhaust the heap.
  * This hop is server-to-R2 inside a datacentre, so it is far quicker than the
  * educator's uplink, and it happens after the browser is already finished.
  */
