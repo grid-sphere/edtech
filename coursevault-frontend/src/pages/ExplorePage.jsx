@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Bot, Microscope, Search, X } from 'lucide-react';
 import CourseCard from '../components/course/CourseCard';
 import { fetchAPI } from '../services/api';
+import { sortCourses } from '../utils/courseOrder.js';
 import { useAuth } from '../context/AuthContext.jsx';
 
 export default function ExplorePage() {
@@ -30,25 +31,22 @@ export default function ExplorePage() {
       });
   }, []);
 
-  const getClassNumber = (title = '') => {
-    const match = title.match(/(\d+)\s*(?:st|nd|rd|th)?\s*Class/i);
-    return match ? parseInt(match[1], 10) : null;
-  };
+  // getClassNumber moved into utils/courseOrder.js as classNumber(), where the
+  // shared comparator uses it. A second copy here would be a second rule.
 
-  const topLevelCourses = courses
-    .filter(c => !c.parent_course_id)
-    .sort((a, b) => {
-      const numA = getClassNumber(a.title);
-      const numB = getClassNumber(b.title);
+  /*
+   * Both lists use the shared comparator now.
+   *
+   * The classes were sorted by the number in the title, which ignored the
+   * teacher's arrows entirely, and the subjects were not sorted at all — they
+   * arrived in whatever order the server sent and stayed there. So "course
+   * order is not reflecting inside class" was literally true: nothing on this
+   * page had ever looked at display_order.
+   */
+  const topLevelCourses = sortCourses(courses.filter(c => !c.parent_course_id));
 
-      if (numA !== null && numB !== null) return numA - numB;
-      if (numA !== null) return -1;
-      if (numB !== null) return 1;
-      return (a.title || '').localeCompare(b.title || '');
-    });
-
-  const childCourses = selectedParentId 
-    ? courses.filter(c => c.parent_course_id === selectedParentId)
+  const childCourses = selectedParentId
+    ? sortCourses(courses.filter(c => c.parent_course_id === selectedParentId))
     : [];
 
   const selectedParentCourse = courses.find(c => c.id === selectedParentId);

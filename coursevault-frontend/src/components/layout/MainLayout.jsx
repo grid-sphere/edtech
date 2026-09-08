@@ -1,9 +1,10 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { Outlet, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
 import { Compass, BookOpen, LayoutDashboard, BarChart3, User as UserIcon, LifeBuoy, Home, Search, Image as ImageIcon } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { isStaff } from '../../utils/roles.js';
+import FocusGame from '../fun/FocusGame.jsx';
 import PageTransition from '../ui/PageTransition.jsx';
 import NotificationBell from './NotificationBell.jsx';
 import HelpDeskPanel from './HelpDeskPanel.jsx';
@@ -128,6 +129,36 @@ export default function MainLayout() {
     setHelpOpen(true);
   };
 
+  /*
+   * Seven taps on the logo opens a twenty-second game. Students only.
+   *
+   * The logo already navigates home, and that must keep working — so the
+   * counter rides alongside the existing onClick rather than replacing it, and
+   * a single tap behaves exactly as it always did. Only the seventh does
+   * anything extra.
+   *
+   * The run resets after a pause, so tapping the logo to navigate on three
+   * separate occasions never accumulates into a hit.
+   */
+  const [showGame, setShowGame] = useState(false);
+  const taps = useRef({ count: 0, last: 0 });
+
+  const onLogoTap = () => {
+    // Not for teachers or admins: this is a break for the people revising.
+    if (!isStaff(user)) {
+      const now = Date.now();
+      const t = taps.current;
+      t.count = now - t.last < 800 ? t.count + 1 : 1;
+      t.last = now;
+      if (t.count >= 7) {
+        t.count = 0;
+        setShowGame(true);
+        return;              // swallow the seventh tap rather than also navigating
+      }
+    }
+    navigate(isStaff(user) ? '/dashboard' : '/home');
+  };
+
   const currentColor = useMemo(() => {
     const pathHash = location.pathname.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
     return transitionColors[pathHash % transitionColors.length];
@@ -177,11 +208,12 @@ export default function MainLayout() {
 
   return (
     <div className="min-h-screen bg-[#FDF1E9] pb-20 font-sans overflow-x-hidden">
+      {showGame && <FocusGame onClose={() => setShowGame(false)} />}
      <nav className="relative z-50 flex flex-wrap justify-between items-center px-4 md:px-12 py-2 md:py-3 sticky top-0 bg-[#FDF1E9] shadow-[0px_4px_10px_rgba(0,0,0,0.12)]">
         {/* Logo */}
         <div 
           className="relative cursor-pointer group inline-block shrink-0" 
-          onClick={() => navigate(isStaff(user) ? '/dashboard' : '/home')}
+          onClick={onLogoTap}
         >
           <img src="/sv-logo.png" alt="Sharda Vidyapeeth" className="h-10 md:h-12 w-auto" />
         </div>

@@ -11,7 +11,7 @@ import courseRoutes from "./routes/courses.js";
 import { BUILTIN_COURSE_CATEGORIES } from "./constants/courseCategories.js";
 import moduleRoutes from "./routes/modules.js";
 import contentRoutes, { recoverInterruptedJobs } from "./routes/content.js";
-import paymentRoutes from "./routes/payments.js";
+import paymentRoutes, { PAYMENT_PROVIDER } from "./routes/payments.js";
 import enrollmentRoutes from "./routes/enrollments.js";
 import videoRoutes from "./routes/video.js";
 import analyticsRoutes from "./routes/analytics.js";
@@ -1112,7 +1112,25 @@ app.listen(PORT, () => {
      * person who can fix them is already looking.
      */
     console.log("");
-    console.log(`💳 Payments: ${process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET ? "enabled" : "DISABLED — free courses still work"}`);
+    /*
+     * Reports the provider the app actually resolved, not a second guess at it.
+     *
+     * This line used to test RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET directly,
+     * so a fully working PayU install printed
+     * "Payments: DISABLED — free courses still work" — while routes/payments.js,
+     * a few lines earlier in the same boot, printed "Payments: PayU (test
+     * mode)". Two messages, opposite claims, and the wrong one is the one that
+     * sounds authoritative.
+     *
+     * Importing PAYMENT_PROVIDER means there is one answer. Adding a third
+     * provider changes this line for free; duplicating the test is what let it
+     * go stale in the first place.
+     */
+    console.log(
+        PAYMENT_PROVIDER === "none"
+            ? "💳 Payments: DISABLED — free courses still work"
+            : `💳 Payments: enabled via ${PAYMENT_PROVIDER}`
+    );
 
     /*
      * Authenticate against the mail server at boot.

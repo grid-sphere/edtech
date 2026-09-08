@@ -1,6 +1,7 @@
 import express from "express";
 import pool from "../config/database.js";
 import authMiddleware from "../middleware/auth.js";
+import { classOrderSql } from "../utils/courseOrder.js";
 
 const router = express.Router();
 
@@ -87,6 +88,7 @@ router.get("/students", authMiddleware, async (req, res) => {
 router.get("/dashboard", authMiddleware, async (req, res) => {
     try {
         const userId = req.user.id;
+        const isAdmin = req.user.role === 'admin';
         
         if (req.user.role !== 'educator' && req.user.role !== 'admin') {
             return res.status(403).json({ 
@@ -116,14 +118,50 @@ router.get("/dashboard", authMiddleware, async (req, res) => {
                 c.status,
                 c.created_at,
                 c.thumbnail_url,
+                /*
+                 * Which class a subject belongs to.
+                 *
+                 * Without it the table was a flat list of everything the
+                 * teacher owns — classes and the subjects inside them as
+                 * siblings, in upload order — so "12th Class", "Physics" and
+                 * "Chemistry" sat in three unrelated rows and the reader had to
+                 * already know which belonged to which.
+                 */
+                c.parent_course_id,
+                p.title AS parent_title,
+                c.display_order,
                 COUNT(DISTINCT e.user_id) as enrolled_count,
-                COUNT(CASE WHEN e.payment_status = 'completed' THEN 1 END) as paid_count
+                COUNT(CASE WHEN e.payment_status = 'completed' THEN 1 END) as paid_count,
+                /*
+                 * Money actually taken, from the payment records — not
+                 * price x paid_count.
+                 *
+                 * That product is wrong the moment a price changes: it reprices
+                 * every past sale at today's figure, so lowering a price makes
+                 * historic revenue drop. Summing completed orders is what the
+                 * bank saw.
+                 */
+                COALESCE((
+                    SELECT SUM(po.amount)
+                      FROM payment_orders po
+                     WHERE po.course_id = c.id AND po.status = 'completed'
+                ), 0)::float AS revenue
             FROM courses c
             LEFT JOIN enrollments e ON c.id = e.course_id AND e.status = 'active'
-            WHERE c.educator_id = $1 AND c.deleted_at IS NULL
-            GROUP BY c.id
-            ORDER BY c.created_at DESC
-        `, [userId]);
+            LEFT JOIN courses p ON p.id = c.parent_course_id
+            /*
+             * An admin sees every course; a teacher sees only their own.
+             *
+             * Scoping this to educator_id alone meant an admin — who owns
+             * nothing — got a list with the parent classes missing, so every
+             * subject fell through the "parent not in the list" branch and
+             * rendered as its own top-level row. The page looked like a flat
+             * dump of subjects because, for that account, it was one.
+             */
+            WHERE ($2::boolean OR c.educator_id = $1) AND c.deleted_at IS NULL
+            GROUP BY c.id, p.title
+            ORDER BY ${classOrderSql('c')}
+        `, [userId, isAdmin]);
         
         // 3. RECENT ENROLLMENTS (last 30 days)
         const recentEnrollments = await pool.query(`
@@ -176,7 +214,8 @@ router.get("/dashboard", authMiddleware, async (req, res) => {
                     thumbnail_url: row.thumbnail_url,
                     created_at: row.created_at,
                     enrolled_count: parseInt(row.enrolled_count),
-                    paid_count: parseInt(row.paid_count)
+                    paid_count: parseInt(row.paid_count),
+                    revenue: Number(row.revenue) || 0
                 })),
                 recent_enrollments: recentEnrollments.rows,
                 daily_activity: dailyActivity.rows

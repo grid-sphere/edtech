@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus, GraduationCap, ChevronRight, Layers, Trash2, Pencil, ChevronUp, ChevronDown, Search, X, ArrowUpDown } from 'lucide-react';
 import CourseCard from '../components/course/CourseCard.jsx';
+import { compareCourses } from '../utils/courseOrder.js';
 import Button from '../components/ui/Button.jsx';
 import CourseModal from '../components/educator/CourseModal.jsx';
 import { fetchAPI } from '../services/api.js';
@@ -291,32 +292,14 @@ export default function EducatorDashboardPage() {
     setEditingCourse(null);
   };
 
-  // Extracts a numeric class value from a title like "9th Class",
-  // "10th Class", "12th Class Physics" etc. Used only as a tie-breaker
-  // when two courses share the same display_order (e.g. brand new
-  // courses that haven't been manually arranged yet).
-  const getClassNumber = (title = '') => {
-    const match = title.match(/(\d+)\s*(?:st|nd|rd|th)?\s*Class/i);
-    return match ? parseInt(match[1], 10) : null;
-  };
-
-  // Primary sort key is display_order (the mentor's manual priority set
-  // via the up/down arrows). Falls back to the class-number pattern, then
-  // alphabetical, only when display_order is tied -- e.g. right after a
-  // fresh course is created and hasn't been arranged yet.
-  const compareCourses = (a, b) => {
-    const orderA = a.display_order ?? 0;
-    const orderB = b.display_order ?? 0;
-    if (orderA !== orderB) return orderA - orderB;
-
-    const numA = getClassNumber(a.title);
-    const numB = getClassNumber(b.title);
-    if (numA !== null && numB !== null) return numA - numB;
-    if (numA !== null) return -1;
-    if (numB !== null) return 1;
-    return (a.title || '').localeCompare(b.title || '');
-  };
-
+  /*
+   * The comparator lives in utils/courseOrder.js now.
+   *
+   * It was defined here and nowhere else, so Explore invented its own rule and
+   * the students' class view disagreed with this screen — the arrangement made
+   * with these arrows was visible only on this page. Sharing it means the
+   * dashboard, Explore and the server all sort by the same three keys.
+   */
   const sortedCourses = [...topLevelCourses].sort(compareCourses);
 
   const query = dashQuery.trim().toLowerCase();

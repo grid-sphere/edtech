@@ -7,7 +7,8 @@ import {
     listCategories,
 } from "../constants/courseCategories.js";
 import pool from "../config/database.js";
-import authMiddleware, { authOnly } from "../middleware/auth.js";
+import authMiddleware, { authOnly, canManage } from "../middleware/auth.js";
+import { classOrderSql } from "../utils/courseOrder.js";
 import { activeEnrolmentSql, parseDurationMonths, parseDurationMinutes } from "../utils/enrollmentAccess.js";
 import { announceCourseIfNew } from "../utils/notify.js";
 
@@ -244,7 +245,20 @@ router.get("/", async (req, res) => {
             query += ` AND c.status = 'published'`;
         }
 
-        query += ` ORDER BY c.created_at DESC`;
+        /*
+         * The teacher's arrangement, not upload date.
+         *
+         * This list feeds Explore — both the class grid and the subjects inside
+         * a class — and it was ordered by created_at, so a teacher could
+         * rearrange their classes, watch the dashboard update, and students
+         * still saw newest-first. The same bug the home screen had, one query
+         * further along.
+         *
+         * Correct for subjects as well as classes: a subject's display_order is
+         * its position within its own class, so ordering the flat list by it
+         * leaves each class's subjects in the arrangement the teacher chose.
+         */
+        query += ` ORDER BY ${classOrderSql('c')}`;
 
         const result = await pool.query(query, params);
         res.json({ success: true, courses: result.rows });
@@ -797,8 +811,8 @@ router.delete("/:id", authMiddleware, async (req, res) => {
             return res.status(404).json({ error: "Course not found or already deleted" });
         }
 
-        if (courseCheck.rows[0].educator_id !== req.user.id) {
-            return res.status(403).json({ error: "Only course creator can delete courses" });
+        if (!canManage(courseCheck.rows[0].educator_id, req.user)) {
+            return res.status(403).json({ error: "Only the course creator or an admin can delete courses" });
         }
 
         /*

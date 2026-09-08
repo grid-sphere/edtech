@@ -19,7 +19,7 @@ import pool from "../config/database.js";
  * Every query below is already scoped to req.user.id, so ownership does not
  * depend on the middleware.
  */
-import { authOnly as authMiddleware } from "../middleware/auth.js";
+import { authOnly as authMiddleware, canManage } from "../middleware/auth.js";
 import { notifyCourseStudents } from "../utils/notify.js";
 
 const router = express.Router();
@@ -161,7 +161,7 @@ router.post("/announce", authMiddleware, async (req, res) => {
             [courseId]
         );
         if (rows.length === 0) return res.status(404).json({ error: "Course not found" });
-        if (rows[0].educator_id !== req.user.id) {
+        if (!canManage(rows[0].educator_id, req.user)) {
             return res.status(403).json({ error: "You do not own this course" });
         }
 

@@ -17,6 +17,17 @@ services:
       - R2_BUCKET_NAME=${R2_BUCKET_NAME}
       - RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID}
       - RAZORPAY_KEY_SECRET=${RAZORPAY_KEY_SECRET}
+      # PayU. Without these four the backend logs "Payments: DISABLED" and
+      # every paid course silently refuses to sell, however complete the .env
+      # on the host is — this list is a whitelist, and a variable missing from
+      # it never reaches the container at all. Anything added to .env from now
+      # on has to be added here too.
+      - PAYU_MERCHANT_KEY=${PAYU_MERCHANT_KEY}
+      - PAYU_MERCHANT_SALT=${PAYU_MERCHANT_SALT}
+      - PAYU_MODE=${PAYU_MODE}
+      # Where PayU sends the student back to. Must be the public address, not
+      # localhost: PayU redirects a real browser here.
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
       # Password-reset email. Leave unset and reset codes are printed to the
       # container log instead of being sent — the flow still works end to end,
       # which is useful for testing before a mail provider is set up.
@@ -30,6 +41,14 @@ services:
       # short and remove entries once the reason for them has passed. The
       # backend prints the list at boot.
       - TWO_FACTOR_EXEMPT_EMAILS=${TWO_FACTOR_EXEMPT_EMAILS}
+      # Read by the code with `||` defaults, so an unset value here is harmless —
+      # but without the line the value in .env is ignored entirely, which is how
+      # JWT_EXPIRES_IN came to be set on the host and have no effect.
+      - JWT_EXPIRES_IN=${JWT_EXPIRES_IN}
+      - APP_TIMEZONE=${APP_TIMEZONE}
+      - TEACHER_APPROVER_EMAIL=${TEACHER_APPROVER_EMAIL}
+      - VIDEO_QUALITY=${VIDEO_QUALITY}
+      - FORCE_HLS=${FORCE_HLS}
     ports:
       - "3000:3000"
     volumes:

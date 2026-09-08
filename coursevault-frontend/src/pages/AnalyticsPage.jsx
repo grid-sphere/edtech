@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
+import CoursePerformance from '../components/educator/CoursePerformance.jsx';
 import { 
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
 } from 'recharts';
-import { IndianRupee, Users, BookOpen, Download, TrendingUp } from 'lucide-react';
+import { IndianRupee, Users, BookOpen, TrendingUp } from 'lucide-react';
 import { fetchAPI } from '../services/api.js';
 import { format } from 'date-fns';
 import { downloadCSV } from '../utils/exportCsv.js';
@@ -144,88 +145,16 @@ export default function AnalyticsPage() {
       </div>
 
       {/* --- COURSE PERFORMANCE --- */}
-      <h2 className="text-2xl md:text-3xl font-black mb-4 md:mb-6">Course Performance</h2>
-
       {/*
-        Two renderings of the same data. A five-column table on a 360px screen
-        either scrolls sideways (the numbers you want to compare end up off
-        screen) or crushes every column to one word per line, so phones get
-        stacked cards instead and the table starts at md.
+        Was a flat five-column table of every course, in upload order, with
+        classes and their subjects as siblings. The component groups subjects
+        under their class, totals each one, and lets the list be searched and
+        reordered — the same numbers, arranged so the two questions this page
+        exists to answer can actually be answered from it.
       */}
-      <div className="md:hidden flex flex-col gap-4 mb-10">
-        {courses.length === 0 ? (
-          <div className="bg-white border-[3px] border-black rounded-[20px] p-8 text-center font-bold text-gray-500 shadow-[4px_4px_0px_0px_#111]">
-            No courses published yet.
-          </div>
-        ) : (
-          courses.map((course) => (
-            <div
-              key={course.id}
-              className="bg-white border-[3px] border-black rounded-[20px] p-4 shadow-[4px_4px_0px_0px_#111]"
-            >
-              <h3 className="font-black text-base leading-tight mb-3 break-words">{course.title}</h3>
-
-              <div className="grid grid-cols-3 gap-2 mb-4">
-                <div className="border-2 border-black rounded-xl px-2 py-2 text-center bg-[#F4F4F4]">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-600">Price</div>
-                  <div className="font-black text-sm mt-0.5 break-words">{formatCurrency(course.price)}</div>
-                </div>
-                <div className="border-2 border-black rounded-xl px-2 py-2 text-center bg-[#F4F4F4]">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-600">Enrolled</div>
-                  <div className="font-black text-sm mt-0.5 text-blue-600">{course.enrolled_count}</div>
-                </div>
-                <div className="border-2 border-black rounded-xl px-2 py-2 text-center bg-[#F4F4F4]">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-600">Paid</div>
-                  <div className="font-black text-sm mt-0.5 text-green-600">{course.paid_count}</div>
-                </div>
-              </div>
-
-              <button
-                onClick={() => handleExport(course.id, course.title)}
-                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-[#F26B4D] border-2 border-black rounded-full text-sm font-bold shadow-[2px_2px_0px_0px_#111] active:translate-y-0.5 active:shadow-none transition-all"
-              >
-                <Download size={16} /> Export CSV
-              </button>
-            </div>
-          ))
-        )}
-      </div>
-
-      <div className="hidden md:block bg-white border-[3px] border-black rounded-[24px] shadow-[8px_8px_0px_0px_#111] overflow-hidden mb-12">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-[#F4F4F4] border-b-[3px] border-black text-sm uppercase tracking-widest font-bold">
-                <th className="p-5">Course Title</th>
-                <th className="p-5 border-l-[3px] border-black text-center">Price</th>
-                <th className="p-5 border-l-[3px] border-black text-center">Enrolled</th>
-                <th className="p-5 border-l-[3px] border-black text-center">Paid</th>
-                <th className="p-5 border-l-[3px] border-black text-center">Export</th>
-              </tr>
-            </thead>
-            <tbody>
-              {courses.map((course, i) => (
-                <tr key={course.id} className={i !== courses.length - 1 ? "border-b-[3px] border-black" : ""}>
-                  <td className="p-5 font-black text-lg">{course.title}</td>
-                  <td className="p-5 border-l-[3px] border-black text-center font-bold">{formatCurrency(course.price)}</td>
-                  <td className="p-5 border-l-[3px] border-black text-center font-bold text-blue-600">{course.enrolled_count}</td>
-                  <td className="p-5 border-l-[3px] border-black text-center font-bold text-green-600">{course.paid_count}</td>
-                  <td className="p-5 border-l-[3px] border-black text-center">
-                    <button 
-                      onClick={() => handleExport(course.id, course.title)}
-                      className="inline-flex items-center gap-2 px-4 py-2 bg-[#F26B4D] border-[2px] border-black rounded-full text-sm font-bold shadow-[2px_2px_0px_0px_#111] hover:translate-y-1 hover:translate-x-1 hover:shadow-none transition-all"
-                    >
-                      <Download size={16} /> CSV
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              {courses.length === 0 && (
-                <tr><td colSpan="5" className="p-10 text-center font-bold text-gray-500">No courses published yet.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+      <h2 className="text-xl md:text-2xl font-black mb-3">Course Performance</h2>
+      <div className="mb-8">
+        <CoursePerformance courses={courses} onExport={handleExport} />
       </div>
 
       {/* Below the per-course figures: those answer "how is this course

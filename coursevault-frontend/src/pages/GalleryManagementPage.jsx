@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Trash2, UploadCloud, ChevronUp, ChevronDown, Link2, Loader, ImageOff } from 'lucide-react';
 import { fetchAPI, resolveMediaUrl, BASE_URL } from '../services/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
+import BannerCropper from '../components/educator/BannerCropper.jsx';
 
 /**
  * Admin → Gallery Management.
@@ -25,6 +26,14 @@ export default function GalleryManagementPage() {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
+  /*
+   * The picked file waits here until it has been cropped.
+   *
+   * Uploading straight from the picker was the bug: the carousel draws every
+   * banner into a 5:2 box with object-cover, so a tall image lost its top and
+   * bottom to a rule the admin never saw and could not adjust.
+   */
+  const [pending, setPending] = useState(null);
   const fileRef = useRef(null);
 
   const load = useCallback(async () => {
@@ -93,6 +102,13 @@ export default function GalleryManagementPage() {
       return;
     }
 
+    // Crop first; upload happens once the frame is confirmed.
+    setError('');
+    setPending(file);
+  };
+
+  const upload = async (file) => {
+    setPending(null);
     setUploading(true);
     setError('');
     try {
@@ -175,6 +191,13 @@ export default function GalleryManagementPage() {
 
   return (
     <div className="max-w-4xl mx-auto pb-20">
+      {pending && (
+        <BannerCropper
+          file={pending}
+          onCancel={() => setPending(null)}
+          onCropped={upload}
+        />
+      )}
       <div className="flex items-center justify-between gap-3 mb-3">
         <div>
           <h1 className="text-lg md:text-2xl font-black">Gallery Management</h1>

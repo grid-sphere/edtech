@@ -1,6 +1,6 @@
 import express from "express";
 import pool from "../config/database.js";
-import authMiddleware from "../middleware/auth.js";
+import authMiddleware, { canManage } from "../middleware/auth.js";
 import {
     seededPermutation,
     invertPermutation,
@@ -151,8 +151,8 @@ router.post("/create", authMiddleware, async (req, res) => {
     if (moduleCheck.rows.length === 0) {
         return res.status(404).json({ error: "Module not found" });
     }
-    if (moduleCheck.rows[0].educator_id !== req.user.id) {
-        return res.status(403).json({ error: "Only the course creator can add quizzes" });
+    if (!canManage(moduleCheck.rows[0].educator_id, req.user)) {
+        return res.status(403).json({ error: "Only the course creator or an admin can add quizzes" });
     }
 
     for (const q of questions) {
@@ -1057,8 +1057,8 @@ router.delete("/:quizId", authMiddleware, async (req, res) => {
         if (quizCheck.rows.length === 0) {
             return res.status(404).json({ error: "Quiz not found" });
         }
-        if (quizCheck.rows[0].educator_id !== req.user.id) {
-            return res.status(403).json({ error: "Only the course creator can delete this quiz" });
+        if (!canManage(quizCheck.rows[0].educator_id, req.user)) {
+            return res.status(403).json({ error: "Only the course creator or an admin can delete this quiz" });
         }
 
         await pool.query(`DELETE FROM quizzes WHERE id = $1`, [quizId]);

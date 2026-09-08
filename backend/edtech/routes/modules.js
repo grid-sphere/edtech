@@ -2,7 +2,7 @@
 
 import express from "express";
 import pool from "../config/database.js";
-import authMiddleware from "../middleware/auth.js";
+import authMiddleware, { canManage } from "../middleware/auth.js";
 
 const router = express.Router()
 // POST /api/modules
@@ -236,8 +236,8 @@ router.delete("/:id", authMiddleware, async (req, res) => {
         }
 
         // 3. NOW we can safely check if the logged-in user is the creator
-        if (courseResult.rows[0].educator_id !== req.user.id) {
-            return res.status(403).json({ error: "Only course creator can delete modules" });
+        if (!canManage(courseResult.rows[0].educator_id, req.user)) {
+            return res.status(403).json({ error: "Only the course creator or an admin can delete modules" });
         }                
         
         // 4. Finally, do the actual soft-delete

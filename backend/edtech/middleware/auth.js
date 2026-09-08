@@ -69,6 +69,35 @@ function rejectIfScoped(decoded, req, res) {
  * Any router whose ids are not content ids should use this instead. It is the
  * same token check, with none of the inference.
  */
+/**
+ * May this user manage content owned by `educatorId`?
+ *
+ * An admin runs the school; a teacher owns their own courses. Every ownership
+ * check in the app compared the two ids and stopped there, so an admin was
+ * refused everywhere a teacher would have been — including renaming a module in
+ * a course they did not personally create, which is most of them.
+ *
+ * That was invisible until somebody actually became an admin, because until
+ * then the role existed only in guards that let it through (`role === 'admin'`
+ * appears in the *content* branch below, and in a couple of routes) and never
+ * in the ownership comparisons that decide the interesting cases. The result
+ * was an account that could reach every screen and edit almost nothing.
+ *
+ * Written once and imported, rather than `|| req.user.role === 'admin'` copied
+ * to nine call sites, because the tenth is the one that gets forgotten.
+ *
+ * This deliberately does not widen anything for students or teachers: a
+ * teacher still cannot touch another teacher's course.
+ *
+ * @param {string|null|undefined} educatorId owner of the course in question
+ * @param {{id: string, role: string}} user   req.user
+ */
+export function canManage(educatorId, user) {
+    if (!user) return false;
+    if (user.role === "admin") return true;
+    return Boolean(educatorId) && educatorId === user.id;
+}
+
 export async function authOnly(req, res, next) {
     try {
         let token;
@@ -181,7 +210,7 @@ async function authMiddleware(req, res, next) {
               [courseId]
           );
           if (courseCheck.rows.length > 0) {
-              req.isCourseCreator = (courseCheck.rows[0].educator_id === req.user.id);
+              req.isCourseCreator = canManage(courseCheck.rows[0].educator_id, req.user);
               req.courseId = courseId;
               req.courseTitle = courseCheck.rows[0].title;
               console.log(`   - Course title: ${courseCheck.rows[0].title}`);
@@ -205,7 +234,7 @@ async function authMiddleware(req, res, next) {
               req.courseId = moduleCheck.rows[0].course_id;
               req.moduleId = moduleId;
               req.moduleTitle = moduleCheck.rows[0].title;
-              req.isCourseCreator = (moduleCheck.rows[0].educator_id === req.user.id);
+              req.isCourseCreator = canManage(moduleCheck.rows[0].educator_id, req.user);
               console.log(`   - Module title: ${moduleCheck.rows[0].title}`);
               console.log(`   - Associated course: ${moduleCheck.rows[0].course_title}`);
               console.log(`   - isCourseCreator: ${req.isCourseCreator ? '✅ YES' : '❌ NO'}`);
@@ -237,7 +266,7 @@ async function authMiddleware(req, res, next) {
               if (content.course_id) {
                   req.courseId = content.course_id;
                   req.courseTitle = content.course_title;
-                  req.isCourseCreator = (content.educator_id === req.user.id);
+                  req.isCourseCreator = canManage(content.educator_id, req.user);
               }
               
               req.contentId = contentId;
@@ -258,7 +287,7 @@ async function authMiddleware(req, res, next) {
 
               req.isContentCreator =
                   isUploader ||
-                  (content.educator_id === req.user.id) ||
+                  canManage(content.educator_id, req.user) ||
                   req.isCourseCreator ||
                   req.user.role === 'admin';
 
@@ -334,9 +363,28 @@ async function authMiddleware(req, res, next) {
               }
           } else {
               console.log(`   - ❌ Content not found or inactive`);
-              // Fallback protection for deletions or uploads not linked to a module yet
-              if (req.user.role === 'educator') {
-                  console.log(`   - ℹ️ User is an educator. Granting contextual creator access bypass.`);
+              /*
+               * Fallback for deletions, uploads not yet linked to a module —
+               * and, in practice, for every module route.
+               *
+               * The id classification above decides "module" by testing
+               * `req.path.includes('module')`, but inside a router mounted at
+               * /api/modules the path is just "/m1". So a module id arrives
+               * here labelled as a content id, the content lookup finds
+               * nothing, and this branch is what actually lets a teacher rename
+               * a module. It reads like an edge case and is the main path.
+               *
+               * Admin was missing from the role test, which is the whole of the
+               * reported bug: an admin fell through to the access decision with
+               * every flag false and got "you do not have permission to view or
+               * manage this content" for a module they were entitled to edit.
+               *
+               * Staff, not ownership, because that is what this branch already
+               * meant — there is no id left to check ownership against once the
+               * lookup has missed.
+               */
+              if (req.user.role === 'educator' || req.user.role === 'admin') {
+                  console.log(`   - ℹ️ Staff user. Granting contextual creator access bypass.`);
                   req.isContentCreator = true;
                   req.isCourseCreator = true;
               }
