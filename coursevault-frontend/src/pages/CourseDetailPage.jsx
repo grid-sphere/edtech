@@ -595,10 +595,19 @@ export default function CourseDetailPage() {
           <CourseAccordion
             key={module.id}
             module={module}
-            // Position in the ordered list, not module_order. Deleting a module
-            // leaves a gap in module_order (0, 1, 3), which would display as
-            // "1, 2, 4". The index always renumbers to 1, 2, 3.
-            moduleNumber={moduleIndex + 1}
+            /*
+             * Numbered from zero, and from the position in the list rather than
+             * from module_order.
+             *
+             * module_order leaves gaps when a module is deleted (0, 1, 3),
+             * which would display as "0, 1, 3"; the index always renumbers to
+             * 0, 1, 2 however the underlying rows are arranged.
+             *
+             * The badge renders `moduleNumber ?? '•'`, and nullish coalescing
+             * passes 0 through — with `||` the first module would silently show
+             * a bullet instead of its number.
+             */
+            moduleNumber={moduleIndex}
             isOpen={expandedModules.includes(module.id)}
             onToggle={() => setExpandedModules(prev => prev.includes(module.id) ? prev.filter(m => m !== module.id) : [...prev, module.id])}
 

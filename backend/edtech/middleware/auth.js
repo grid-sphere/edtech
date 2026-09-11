@@ -2,7 +2,7 @@ import jwt from "jsonwebtoken";
 import { activeEnrolmentSql } from "../utils/enrollmentAccess.js";
 import pool from "../config/database.js";
 
-import { JWT_SECRET } from "../config/jwt.js";
+import { JWT_SECRET, renewedSession, RENEWED_TOKEN_HEADER } from "../config/jwt.js";
 
 /**
  * The scope carried by a token issued to an account that has not confirmed its
@@ -22,6 +22,29 @@ const VERIFY_SCOPE = "verify-email";
  * touching.
  */
 const VERIFY_SCOPE_ALLOWED = new Set(["/send-verification", "/verify-email"]);
+
+/**
+ * Hand back a fresh token when this one is past halfway through its life.
+ *
+ * The session slides on use: every authenticated request is a chance to reset
+ * the clock, so an account someone actually uses never reaches its expiry. The
+ * client swaps the header in silently — nothing about the request changes, and a
+ * client that ignores the header simply keeps the old token until it runs out,
+ * which is the behaviour we had before.
+ *
+ * Set rather than returned because both middlewares below need it and neither
+ * has a single exit point.
+ */
+function slideSession(res, decoded) {
+    try {
+        const fresh = renewedSession(decoded);
+        if (fresh) res.setHeader(RENEWED_TOKEN_HEADER, fresh);
+    } catch (err) {
+        // Renewal is a convenience. A failure here must never turn a valid
+        // request into a failed one.
+        console.error("[auth] could not renew session:", err.message);
+    }
+}
 
 /**
  * Refuse a scoped token outside its two permitted routes.
@@ -121,6 +144,8 @@ export async function authOnly(req, res, next) {
 
         if (rejectIfScoped(decoded, req, res)) return;
 
+        slideSession(res, decoded);
+
         req.user = {
             id: decoded.id,
             email: decoded.email,
@@ -176,6 +201,8 @@ async function authMiddleware(req, res, next) {
       // Same gate as authOnly: a verify-scoped token gets no further than the
       // two verification routes, whichever middleware guards the request.
       if (rejectIfScoped(decoded, req, res)) return;
+
+      slideSession(res, decoded);
 
       // Basic user info from token
       req.user = {

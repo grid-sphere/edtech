@@ -3,6 +3,7 @@ import { Video, FileText, HelpCircle, Plus, Edit, Trash2, FilePlus, X, ChevronUp
 import { formatSize } from '../../utils/format';
 import { fetchAPI } from '../../services/api.js';
 import InlineVideoPlayer from './InlineVideoPlayer.jsx';
+import StudyIcon from './StudyIcon.jsx';
 import QuizModal from '../educator/QuizModal.jsx';
 import QuizTakeModal from './QuizTakeModal.jsx';
 
@@ -913,10 +914,16 @@ export default function CourseAccordion({
         className="p-3 md:p-6 flex items-start gap-3 cursor-pointer hover:bg-gray-50 transition-colors"
         onClick={onToggle}
       >
-        {/* Play Store detail style: a square "icon" carrying the module number,
-            then title, meta line and a thumbnail strip of what is inside. */}
-        <div className="w-12 h-12 md:w-14 md:h-14 shrink-0 rounded-xl bg-[#F4DFD8] border-2 border-black flex items-center justify-center font-black text-lg md:text-xl">
-          {moduleNumber ?? '•'}
+        {/* Play Store detail style: a square "icon", then title, meta line and a
+            thumbnail strip of what is inside. */}
+        {/* No tile behind it: the icon is already a bordered disc, and a square
+            plate under a circular badge reads as a mistake rather than a frame. */}
+        <div
+          role="img"
+          aria-label={moduleNumber == null ? 'Module' : `Module ${moduleNumber}`}
+          className="w-12 h-12 md:w-14 md:h-14 shrink-0 flex items-center justify-center"
+        >
+          <StudyIcon className="w-full h-full" />
         </div>
 
         <div className="flex-1 min-w-0">

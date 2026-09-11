@@ -27,6 +27,7 @@ import { verifyMail } from "./utils/mailer.js";
 // Import config
 import pool from "./config/database.js";
 import { r2Client, R2_BUCKET_NAME } from "./config/r2.js";
+import { RENEWED_TOKEN_HEADER, JWT_EXPIRES_IN } from "./config/jwt.js";
 
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -933,6 +934,16 @@ app.use(cors({
     origin: true, // ✅ Dynamically reflects the incoming request origin (bulletproof for dev & prod)
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+    /*
+     * Without this the sliding session silently does nothing in development.
+     *
+     * A cross-origin response's headers are invisible to JavaScript unless the
+     * server names them here — fetch would see no X-Renewed-Token, the client
+     * would never swap it in, and sessions would keep expiring on their original
+     * clock. Production is same-origin behind nginx so it works either way,
+     * which is exactly how this would have gone unnoticed.
+     */
+    exposedHeaders: [RENEWED_TOKEN_HEADER],
     credentials: true,
     optionsSuccessStatus: 200
 }));
@@ -1130,6 +1141,18 @@ app.listen(PORT, () => {
         PAYMENT_PROVIDER === "none"
             ? "💳 Payments: DISABLED — free courses still work"
             : `💳 Payments: enabled via ${PAYMENT_PROVIDER}`
+    );
+
+    /*
+     * Printed because "why am I being logged out?" is unanswerable from the
+     * outside: the lifetime lives in an env file on the server, and the symptom
+     * — a sign-in screen some days later — looks identical whatever the cause.
+     * One line at boot makes the setting checkable.
+     */
+    console.log(
+        JWT_EXPIRES_IN
+            ? `🔑 Sessions: ${JWT_EXPIRES_IN}, renewed on use (set JWT_EXPIRES_IN=never for no expiry)`
+            : "🔑 Sessions: no expiry — tokens are valid until JWT_SECRET changes"
     );
 
     /*

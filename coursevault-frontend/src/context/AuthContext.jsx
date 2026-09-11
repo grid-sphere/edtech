@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { fetchAPI } from '../services/api.js';
+import { fetchAPI, readTokenClaims, isTokenExpired } from '../services/api.js';
 
 const AuthContext = createContext();
 
@@ -24,12 +24,51 @@ export const AuthProvider = ({ children }) => {
           setUser(data.user);
         } catch (err) {
           /*
-           * A verify-scoped token left in storage — from a reload part-way
-           * through verification — makes /auth/me return 403, not 401, so it
-           * lands here rather than in fetchAPI's redirect. Clearing it sends
-           * them back to sign in, which is the correct place to restart.
+           * This used to discard the token on *any* failure, which is the
+           * likeliest reason people were "logged out" at times that had nothing
+           * to do with the token's expiry. /auth/me runs on every app load, so
+           * a backend that was restarting, a phone that woke up before its
+           * connection did, or one dropped request at the wrong moment threw
+           * away a perfectly good session — and the next thing the user saw was
+           * the sign-in screen, indistinguishable from an expired login.
+           *
+           * Only the server actually rejecting the credential is grounds for
+           * clearing it. 401 is an invalid or expired token; 403 is the
+           * verify-scoped token left over from a reload part-way through
+           * verification, which cannot reach /auth/me. Both mean: sign in again.
            */
-          localStorage.removeItem('token');
+          const rejected = err?.status === 401 || err?.status === 403;
+          /*
+           * No status at all means fetch itself failed — offline, DNS, the
+           * server not listening yet. 5xx means it is up but broken. Those are
+           * the two cases where the token is probably still good and the answer
+           * is to wait, not to sign out. Any other 4xx is left alone: the token
+           * is kept, but nothing is assumed about it.
+           */
+          const unreachable = !err?.status || err.status >= 500;
+          if (rejected) {
+            localStorage.removeItem('token');
+          } else if (unreachable) {
+            /*
+             * Couldn't ask the server. Trust the token we are holding, as far
+             * as its own expiry claim, and carry on with the identity it
+             * carries. This is not a security decision — the claims are
+             * unverified and the app grants nothing on their say-so. Every
+             * request still sends the token, and the server still decides. The
+             * worst case is a session that looks alive until the first real
+             * call comes back 401, which is better than one that is thrown
+             * away because the network hiccupped on startup.
+             */
+            const claims = readTokenClaims(token);
+            if (claims && !claims.scope && !isTokenExpired(claims)) {
+              setUser({
+                id: claims.id,
+                email: claims.email,
+                name: claims.name,
+                role: claims.role,
+              });
+            }
+          }
         }
       }
       setLoading(false);
@@ -153,8 +192,8 @@ export const AuthProvider = ({ children }) => {
    * Apply a profile change coming back from the server.
    *
    * A new token accompanies name or email changes — the JWT carries both in
-   * its payload, so without swapping it the old values would stay in effect
-   * for the remaining seven days of its life.
+   * its payload, so without swapping it the old values would stay in effect for
+   * the rest of the token's life, which is now a year rather than a week.
    */
   const applyProfileUpdate = ({ user: updatedUser, token }) => {
     if (token) localStorage.setItem('token', token);

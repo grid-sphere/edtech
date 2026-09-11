@@ -118,6 +118,61 @@ export const uploadVideoWithProgress = (
   });
 };
 
+/**
+ * The header the backend uses to hand back a longer-lived token.
+ *
+ * The session slides: once a token is past halfway through its life, any
+ * authenticated request comes back with a replacement. Swapping it in here — in
+ * the one function every call goes through — is what turns a fixed expiry into
+ * "stays signed in as long as you keep using it". Doing it per-caller would mean
+ * the sliding worked on whichever screens someone remembered to wire up.
+ *
+ * Silent by design. Nothing about the response changes, and a failure to store
+ * the new token just leaves the old one in place until it expires, which is the
+ * behaviour we had before.
+ */
+export const RENEWED_TOKEN_HEADER = 'X-Renewed-Token';
+
+function adoptRenewedToken(response) {
+  try {
+    const fresh = response.headers.get(RENEWED_TOKEN_HEADER);
+    // Only replace a token we are actually holding: a stale response arriving
+    // after sign-out must not resurrect the session.
+    if (fresh && localStorage.getItem('token')) localStorage.setItem('token', fresh);
+  } catch (_) {
+    // Storage disabled, or a header the browser will not expose cross-origin.
+  }
+}
+
+/**
+ * Decode a JWT payload without verifying it.
+ *
+ * Only ever used to read claims the server already put there — never to decide
+ * anything the server has not also checked. The signature is not validated
+ * because it cannot be: the secret is on the server, which is the point. Every
+ * request still carries the token and is still judged on the server.
+ *
+ * @returns {object|null}
+ */
+export const readTokenClaims = (token) => {
+  try {
+    const payload = token?.split('.')[1];
+    if (!payload) return null;
+    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+    // atob gives one byte per character; this recovers UTF-8 names.
+    const text = decodeURIComponent(
+      Array.from(json, (c) => '%' + c.charCodeAt(0).toString(16).padStart(2, '0')).join('')
+    );
+    return JSON.parse(text);
+  } catch (_) {
+    return null;
+  }
+};
+
+/** Has this token's own `exp` passed? A token with no `exp` never expires. */
+export const isTokenExpired = (claims) =>
+  Boolean(claims?.exp) && claims.exp * 1000 <= Date.now();
+
 // Existing fetchAPI Utility
 /**
  * @param {object} [options]
@@ -146,6 +201,7 @@ export const fetchAPI = async (endpoint, options = {}) => {
 
   try {
     const response = await fetch(`${BASE_URL}${endpoint}`, { ...options, headers });
+    adoptRenewedToken(response);
     const contentType = response.headers.get("content-type");
     const data = contentType?.includes("application/json")
       ? await response.json()
@@ -168,9 +224,24 @@ export const fetchAPI = async (endpoint, options = {}) => {
       // Express answers an unmatched route with an HTML error page. Passing
       // that straight to Error() put a full <!DOCTYPE html> document inside an
       // alert() box, burying the one useful line ("Cannot PUT /api/...").
+      /*
+       * Carry the status on the error object.
+       *
+       * Callers could otherwise only tell "the server refused you" from "the
+       * server was not reachable" by matching on message text. AuthContext has
+       * to make exactly that distinction — a 401 means sign in again, a dropped
+       * connection means try again — and got it wrong, discarding the stored
+       * token whenever the backend was restarting.
+       */
+      const fail = (message) => {
+        const err = new Error(message);
+        err.status = response.status;
+        return err;
+      };
+
       if (typeof data === 'string' && /<!DOCTYPE|<html/i.test(data)) {
         const cannot = data.match(/Cannot (GET|POST|PUT|DELETE|PATCH) ([^\s<]+)/i);
-        throw new Error(
+        throw fail(
           cannot
             ? `${cannot[1]} ${cannot[2]} — no such endpoint (${response.status}). ` +
               `If this route was just added, restart the backend.`
@@ -178,7 +249,7 @@ export const fetchAPI = async (endpoint, options = {}) => {
         );
       }
 
-      throw new Error(data?.error || (typeof data === 'string' ? data : null) || `Request failed (${response.status})`);
+      throw fail(data?.error || (typeof data === 'string' ? data : null) || `Request failed (${response.status})`);
     }
 
     return data;

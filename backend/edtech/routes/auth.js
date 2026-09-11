@@ -5,7 +5,7 @@ import jwt from "jsonwebtoken";
 import pool from "../config/database.js";
 import authMiddleware from "../middleware/auth.js";
 
-import { JWT_SECRET, JWT_EXPIRES_IN } from "../config/jwt.js";
+import { JWT_SECRET, signSession } from "../config/jwt.js";
 import {
     normalizePhone,
     normalizeEmail,
@@ -90,13 +90,12 @@ function verifyScopedToken(user) {
     );
 }
 
-function fullToken(user) {
-    return jwt.sign(
-        { id: user.id, email: user.email, role: user.role, name: user.name },
-        JWT_SECRET,
-        { expiresIn: JWT_EXPIRES_IN }
-    );
-}
+/*
+ * Signed through config/jwt.js rather than here, because the lifetime is no
+ * longer a plain duration string — it can be "no expiry at all", which
+ * `{ expiresIn: null }` cannot express.
+ */
+const fullToken = (user) => signSession(user);
 
 /**
  * Stamp the moment a session actually began.
@@ -1067,11 +1066,7 @@ router.put("/profile", authMiddleware, async (req, res) => {
         const response = { success: true, user: profile };
 
         if (nameChanged) {
-            response.token = jwt.sign(
-                { id: profile.id, email: profile.email, role: profile.role, name: profile.name },
-                JWT_SECRET,
-                { expiresIn: JWT_EXPIRES_IN }
-            );
+            response.token = signSession(profile);
         }
 
         res.json(response);
