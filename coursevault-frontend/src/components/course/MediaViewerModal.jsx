@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Loader, FileDown } from 'lucide-react';
-import { fetchAPI } from '../../services/api.js';
+import { fetchAPI, BASE_URL, MEDIA_ORIGIN } from '../../services/api.js';
 import Hls from 'hls.js';
 import PdfCanvasViewer from './PdfCanvasViewer.jsx';
 
@@ -55,9 +55,9 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
           currentPosRef.current = initialPos;
 
           const token = localStorage.getItem('token');
-          const backendDomain = (import.meta && import.meta.env && import.meta.env.VITE_API_URL)
-            ? import.meta.env.VITE_API_URL.replace('/api', '')
-            : 'http://localhost:3000';
+          // Resolved the same way every other request is. The old inline
+          // fallback was localhost:3000, which is the phone on a phone.
+          const backendDomain = MEDIA_ORIGIN;
 
           if (streamData.mp4Url) {
             // Stored without transcoding — the browser plays it directly and
@@ -75,9 +75,17 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
 
         } else if (type.includes('pdf') || type.includes('document')) {
           const token = localStorage.getItem('token');
-          const baseUrl = (import.meta && import.meta.env && import.meta.env.VITE_API_URL) || 'http://localhost:3000/api';
 
-          const response = await fetch(`${baseUrl}/content/${targetContentId}/pdf?courseId=${courseId || ''}`, {
+          /*
+           * BASE_URL, not a hand-rolled fallback.
+           *
+           * This read import.meta.env.VITE_API_URL and fell back to
+           * localhost:3000/api. There is no VITE_API_URL in this project, so the
+           * fallback was always what ran — the backend on a laptop, and the
+           * phone itself on a phone. The request never resolved and the modal
+           * sat on "Mounting secure media stream" until the student gave up.
+           */
+          const response = await fetch(`${BASE_URL}/content/${targetContentId}/pdf?courseId=${courseId || ''}`, {
             headers: { 'Authorization': `Bearer ${token}` }
           });
 

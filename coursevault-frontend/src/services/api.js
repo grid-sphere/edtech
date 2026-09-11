@@ -17,6 +17,24 @@ const BASE_URL = getBaseUrl();
 export { BASE_URL };
 
 /**
+ * The backend origin, for URLs that are not under /api — video streams and
+ * file downloads that the browser fetches directly.
+ *
+ * Derived from BASE_URL rather than resolved separately. Three components used
+ * to build this themselves as
+ *
+ *     import.meta.env.VITE_API_URL ? ... : 'http://localhost:3000'
+ *
+ * and there is no VITE_API_URL in this project, so every one of them pointed at
+ * localhost:3000 on every device. On the developer's laptop that is the backend
+ * and everything worked; on a phone it is the phone, so video and PDF hung for
+ * ever on their loading screens while the rest of the app — which goes through
+ * BASE_URL — was fine. A bug that only appears on the devices students use is
+ * the worst kind to leave to a hardcoded fallback.
+ */
+export const MEDIA_ORIGIN = BASE_URL.replace(/\/api\/?$/, '');
+
+/**
  * Turn an API-relative media path into one the browser can actually load.
  *
  * The upload endpoints return relative URLs like

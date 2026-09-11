@@ -214,6 +214,60 @@ export default function PdfCanvasViewer({ data, title }) {
     });
   }, []);
 
+  /* ----------------------------------------------------------------- pinch
+   *
+   * Two fingers scale the document, which is what a phone reader reaches for
+   * before looking for buttons.
+   *
+   * The browser's own pinch-zoom does not help here: it magnifies the whole
+   * page, and these canvases live inside a scrolling modal, so the page has
+   * nowhere to go. touch-action: pan-x pan-y on the scroller tells the browser
+   * to keep one-finger scrolling and hand two-finger gestures to us.
+   *
+   * During the gesture only a CSS transform is applied — cheap, and briefly
+   * soft, because it is stretching pixels already drawn. On release the scale
+   * is committed to `zoom`, which re-renders the pages at the new resolution
+   * and makes the text crisp again. Re-rendering every page on every frame of a
+   * pinch would drop the gesture to single figures on a mid-range phone.
+   */
+  const pointers = useRef(new Map());
+  const pinchStart = useRef(0);
+  const [gesture, setGesture] = useState(1);
+
+  const spread = () => {
+    const [a, b] = [...pointers.current.values()];
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
+
+  const onPointerDown = (e) => {
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.current.size === 2) pinchStart.current = spread();
+  };
+
+  const onPointerMove = (e) => {
+    if (!pointers.current.has(e.pointerId)) return;
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.current.size !== 2 || !pinchStart.current) return;
+    const ratio = spread() / pinchStart.current;
+    /*
+     * Clamped against the committed zoom, not against 1, so a pinch cannot
+     * push the document past the bounds the buttons respect.
+     */
+    const target = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom * ratio));
+    setGesture(target / zoom);
+  };
+
+  const endPointer = (e) => {
+    pointers.current.delete(e.pointerId);
+    // Commit on the way down from two fingers to one, not at zero: lifting one
+    // finger ends the pinch even though the other is still on the glass.
+    if (pointers.current.size < 2 && gesture !== 1) {
+      setZoom((z) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(z * gesture * 100) / 100)));
+      setGesture(1);
+      pinchStart.current = 0;
+    }
+  };
+
   return (
     <div className="w-full h-full flex flex-col bg-[#F4F4F4]">
       {/*
@@ -264,8 +318,20 @@ export default function PdfCanvasViewer({ data, title }) {
       )}
 
       {/* overflow-auto is what makes a zoomed page reachable — without it the
-          part beyond the container edge is simply clipped away. */}
-      <div className="flex-1 min-h-0 overflow-auto p-2 md:p-4">
+          part beyond the container edge is simply clipped away.
+
+          touch-action keeps one-finger scrolling with the browser and gives us
+          two-finger gestures; without it the browser swallows the pinch and
+          zooms the page instead of the document. */}
+      <div
+        className="flex-1 min-h-0 overflow-auto p-2 md:p-4"
+        style={{ touchAction: 'pan-x pan-y' }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endPointer}
+        onPointerCancel={endPointer}
+        onPointerLeave={endPointer}
+      >
         {status === 'loading' && (
           <div className="flex flex-col items-center justify-center gap-3 py-16 font-bold text-gray-500">
             <Loader className="animate-spin text-[#F26B4D]" size={28} strokeWidth={3} />
@@ -280,7 +346,20 @@ export default function PdfCanvasViewer({ data, title }) {
           </div>
         )}
 
-        <div ref={containerRef} />
+        {/*
+          The live pinch scale. transformOrigin is the top-left so the document
+          grows away from the corner the reader is already anchored to —
+          scaling from the centre would slide the page under their fingers.
+          At rest this is scale(1) and costs nothing.
+        */}
+        <div
+          ref={containerRef}
+          style={{
+            transform: gesture === 1 ? undefined : `scale(${gesture})`,
+            transformOrigin: '0 0',
+            willChange: gesture === 1 ? undefined : 'transform',
+          }}
+        />
 
         {status === 'ready' && pageCount > 1 && (
           <p className="text-center text-xs font-bold text-gray-500 py-2">

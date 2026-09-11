@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Loader } from 'lucide-react';
 import Hls from 'hls.js';
-import { fetchAPI } from '../../services/api.js';
+import { fetchAPI, BASE_URL, MEDIA_ORIGIN } from '../../services/api.js';
 
 export default function InlineVideoPlayer({ content, courseId, isEnrolled }) {
   const [loading, setLoading] = useState(true);
@@ -61,9 +61,9 @@ export default function InlineVideoPlayer({ content, courseId, isEnrolled }) {
           setError('Video is still processing and transcoding. Please check back in a moment!');
         } else if (streamData.mp4Url || streamData.hlsUrl) {
           const token = localStorage.getItem('token');
-          const backendDomain = (import.meta && import.meta.env && import.meta.env.VITE_API_URL)
-            ? import.meta.env.VITE_API_URL.replace('/api', '')
-            : 'http://localhost:3000';
+          // Same resolution as every other request. The old fallback was
+          // localhost:3000, which on a phone is the phone.
+          const backendDomain = MEDIA_ORIGIN;
 
           if (streamData.mp4Url) {
             setIsProgressive(true);
@@ -164,11 +164,10 @@ export default function InlineVideoPlayer({ content, courseId, isEnrolled }) {
       if (finalPos <= 0 || finalPos === Math.round(lastSavedPosRef.current)) return;
 
       const token = localStorage.getItem('token');
-      const baseUrl = (import.meta && import.meta.env && import.meta.env.VITE_API_URL)
-        ? import.meta.env.VITE_API_URL
-        : 'http://localhost:3000/api';
-
-      fetch(`${baseUrl}/video/progress`, {
+      // Progress was posted to localhost:3000 on every student's phone, so it
+      // silently went nowhere — which is why watch progress only ever moved
+      // when someone used a laptop.
+      fetch(`${BASE_URL}/video/progress`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
