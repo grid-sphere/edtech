@@ -26,7 +26,8 @@ import authMiddleware from "../middleware/auth.js";
 import { activeEnrolmentSql } from "../utils/enrollmentAccess.js";
 import { notifyCourseStudents } from "../utils/notify.js";
 
-import { generateFileHash, getFileExtension, getMimeType } from "../utils/helpers.js";
+import { generateFileHash, getFileExtension, getMimeType, pipeStream } from "../utils/helpers.js";
+import { pipeline as pipelineCb } from "node:stream";
 
 const router = express.Router();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -917,12 +918,12 @@ async function processUploadedObject(contentId, key, title) {
     try {
         const obj = await r2Client.send(new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key }));
 
+        // Same reasoning as the media routes: if the disk write fails, the R2
+        // read has to be torn down with it or the socket is never returned.
         await new Promise((resolve, reject) => {
-            const out = fs.createWriteStream(localPath);
-            obj.Body.pipe(out);
-            obj.Body.on("error", reject);
-            out.on("error", reject);
-            out.on("finish", resolve);
+            pipelineCb(obj.Body, fs.createWriteStream(localPath), (err) =>
+                err ? reject(err) : resolve()
+            );
         });
 
         const fileHash = await hashFileFromDisk(localPath);
@@ -1343,7 +1344,13 @@ router.get("/:id/file", authMiddleware, async (req, res) => {
         if (obj.ContentRange) res.setHeader("Content-Range", obj.ContentRange);
 
         res.status(range && obj.ContentRange ? 206 : 200);
-        obj.Body.pipe(res);
+        /*
+         * Not `.pipe()`. Players abort this request on every seek and every
+         * pause, and a bare pipe leaves the R2 read open when they do — see
+         * pipeStream for why fifty of those stopped the whole site serving
+         * media.
+         */
+        pipeStream(obj.Body, res, `video ${id}`);
     } catch (err) {
         if (err.name === "InvalidRange") return res.status(416).end();
         console.error("File stream error:", err.message);

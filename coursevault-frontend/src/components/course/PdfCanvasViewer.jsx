@@ -136,7 +136,18 @@ export default function PdfCanvasViewer({ data, title }) {
       setStatus('loading');
       try {
         const container = containerRef.current;
-        if (!container) return;
+        if (!container) {
+          /*
+           * Bailing silently here left status on 'loading' — set three lines
+           * above and never cleared — so the reader sat on "Rendering
+           * document..." indefinitely with nothing in the console. A spinner
+           * that never resolves is the worst failure to be handed a bug report
+           * about, because it looks identical to a large PDF still working.
+           */
+          setError('The viewer could not attach to the page.');
+          setStatus('error');
+          return;
+        }
         container.innerHTML = '';
 
         const available = container.clientWidth || 800;

@@ -28,6 +28,7 @@ import { verifyMail } from "./utils/mailer.js";
 import pool from "./config/database.js";
 import { r2Client, R2_BUCKET_NAME } from "./config/r2.js";
 import { RENEWED_TOKEN_HEADER, JWT_EXPIRES_IN } from "./config/jwt.js";
+import { pipeStream } from "./utils/helpers.js";
 
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1037,7 +1038,13 @@ app.get("/api/hls/serve", async (req, res) => {
             res.setHeader("Content-Length", r2Response.ContentLength);
         }
         if (isTs) {
-            r2Response.Body.pipe(res);
+            /*
+             * The biggest leak of the three. hls.js cancels in-flight segment
+             * requests routinely — on seek, on quality change, and whenever it
+             * has buffered far enough ahead — so this path aborted more often
+             * than it completed. See pipeStream.
+             */
+            pipeStream(r2Response.Body, res, `hls ${videoId}/${hlsPath}`);
             return;
         }
 
