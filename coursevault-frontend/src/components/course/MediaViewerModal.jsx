@@ -23,10 +23,79 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
   const rawContentType = content?.content_type || '';
   const type = String(rawContentType).toLowerCase();
 
+  /* ------------------------------------------------------- the back gesture
+   *
+   * This viewer is state, not a route, so the browser has no history entry for
+   * it. A back swipe on a phone therefore popped the last real navigation and
+   * threw the student out of the course entirely — one gesture from reading a
+   * PDF to the home screen, with the course page gone too.
+   *
+   * Pushing an entry when it opens gives back something to pop. The listener
+   * closes the viewer instead of navigating, so back means "close this", which
+   * is what the gesture means everywhere else on a phone.
+   */
+  const closeRef = useRef(onClose);
+  useEffect(() => { closeRef.current = onClose; }, [onClose]);
+
+  useEffect(() => {
+    /*
+     * Keyed on the content, not on mount.
+     *
+     * This component is always rendered — the parent passes content={null} and
+     * it draws nothing — so a mount-only effect would push an entry on every
+     * course page load and none when the viewer actually opened, which breaks
+     * the back button everywhere instead of fixing it here.
+     */
+    if (!targetContentId) return undefined;
+
+    window.history.pushState({ svMediaViewer: true }, '');
+
+    const onPop = () => closeRef.current?.();
+    window.addEventListener('popstate', onPop);
+
+    return () => {
+      window.removeEventListener('popstate', onPop);
+      /*
+       * Closing with the X leaves our pushed entry on the stack, so the next
+       * back press would be swallowed doing nothing visible. Popping it here
+       * keeps the history honest.
+       *
+       * Guarded on the marker: when the viewer was closed BY the back gesture
+       * the entry is already gone, and calling back() again would take the
+       * student off the course page — the very bug this fixes. The listener is
+       * removed first, so this cannot re-enter.
+       */
+      if (window.history.state?.svMediaViewer) window.history.back();
+    };
+    /*
+     * onClose is read through a ref rather than listed here: the parent passes
+     * an inline arrow, so a dependency on it would re-run this on every render
+     * and stack one history entry per render.
+     */
+  }, [targetContentId]);
+
   useEffect(() => {
     if (!targetContentId) return;
-    
+
     let isCancelled = false;
+    /*
+     * A hung request must not spin for ever.
+     *
+     * The PDF and video fetches had no ceiling: a request that never came back
+     * — a dropped connection, a backend still starting, a proxy swallowing it —
+     * left the modal on "Mounting secure media stream..." with no error, which
+     * is indistinguishable from "this file will not open" and is the single most
+     * common shape of that complaint. This aborts after a timeout so the reader
+     * is told something is wrong instead of watching a spinner.
+     *
+     * The controller also lets the cleanup below abort a fetch that is still in
+     * flight when the viewer closes or switches content, rather than leaving it
+     * running to resolve into state nobody is showing.
+     */
+    const controller = new AbortController();
+    const LOAD_TIMEOUT_MS = 30000;
+    const timeoutId = setTimeout(() => controller.abort(), LOAD_TIMEOUT_MS);
+
     setLoading(true);
     setStreamUrl(null);
     setIsProgressive(false);
@@ -86,7 +155,8 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
            * sat on "Mounting secure media stream" until the student gave up.
            */
           const response = await fetch(`${BASE_URL}/content/${targetContentId}/pdf?courseId=${courseId || ''}`, {
-            headers: { 'Authorization': `Bearer ${token}` }
+            headers: { 'Authorization': `Bearer ${token}` },
+            signal: controller.signal,
           });
 
           if (!response.ok) {
@@ -126,18 +196,33 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
           throw new Error(`Unknown content type configuration: "${rawContentType}"`);
         }
       } catch (err) {
-        if (!isCancelled) {
-          console.error('Failed to load media:', err);
-          setError(err.message || 'Failed to load content');
+        if (isCancelled) return;
+        /*
+         * An abort is either the timeout firing or the viewer closing. The
+         * close path sets isCancelled first, so reaching here with an AbortError
+         * means the timeout won — the request genuinely stalled. Say so, rather
+         * than showing the raw "The operation was aborted" the browser throws.
+         */
+        if (err.name === 'AbortError') {
+          console.error('Media load timed out:', targetContentId);
+          setError('This took too long to load. Check your connection and try again.');
           setLoading(false);
+          return;
         }
+        console.error('Failed to load media:', err);
+        setError(err.message || 'Failed to load content');
+        setLoading(false);
       }
     };
 
     initMedia();
-    
+
     return () => {
       isCancelled = true;
+      clearTimeout(timeoutId);
+      // Abort last: it rejects any in-flight fetch, and the handler above bails
+      // early on isCancelled so this cannot flash an error as the viewer closes.
+      controller.abort();
     };
   }, [targetContentId, type, courseId, isEnrolled]);
 

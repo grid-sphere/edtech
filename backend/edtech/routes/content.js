@@ -653,18 +653,60 @@ router.post("/upload-finish", authMiddleware, async (req, res) => {
         const fileHash = await hashFileFromDisk(assembledPath);
         const stats = fs.statSync(assembledPath);
 
-        // An identical video already processed needs no second encode.
+        /*
+         * An identical video already processed needs no second encode.
+         *
+         * The status check used to guard only the `ready` case and then fall
+         * through — straight into an INSERT carrying the same file_hash, which
+         * the UNIQUE index rejects with
+         *   duplicate key value violates unique constraint "content_items_file_hash_key"
+         *
+         * So a video whose first upload was still encoding, or had failed,
+         * could never be uploaded again: the dead row kept the hash for ever
+         * and every retry hit the same wall. Which is the worst time for it,
+         * because retrying is exactly what someone does after a failed upload.
+         */
         const existingResolved = await resolveExistingByHash(pool, fileHash, { title, description });
-        if (existingResolved && existingResolved.row.status === 'ready') {
-            fs.unlinkSync(assembledPath);
-            const contentId = existingResolved.row.id;
-            if (moduleId) {
+        if (existingResolved) {
+            const holder = existingResolved.row;
+
+            const attachToModule = async (contentId) => {
+                if (!moduleId) return;
                 await pool.query(`
                     UPDATE modules SET content_ids = array_append(content_ids, $1::uuid)
                     WHERE id = $2::uuid AND NOT ($1::uuid = ANY(content_ids))
                 `, [contentId, moduleId]);
+            };
+
+            if (holder.status === 'ready') {
+                fs.unlinkSync(assembledPath);
+                await attachToModule(holder.id);
+                return res.status(200).json({ success: true, isDuplicate: true, content: holder });
             }
-            return res.status(200).json({ success: true, isDuplicate: true, content: existingResolved.row });
+
+            /*
+             * Still encoding. The same bytes are already in flight, so hand
+             * back that row rather than starting a second job on the same file
+             * — the UI polls it to completion either way.
+             */
+            if (holder.status === 'processing') {
+                fs.unlinkSync(assembledPath);
+                assembledPath = null;
+                await attachToModule(holder.id);
+                return res.status(200).json({ success: true, isDuplicate: true, content: holder });
+            }
+
+            /*
+             * Failed, or abandoned in some other state: it holds the hash with
+             * nothing behind it. Release it so this upload can claim it.
+             * Nulling rather than deleting keeps the row — and whatever it is
+             * still attached to — intact for anyone looking at the failure.
+             */
+            await pool.query(
+                `UPDATE content_items SET file_hash = NULL, updated_at = NOW() WHERE id = $1`,
+                [holder.id]
+            );
+            console.log(`🔓 released file_hash held by failed content ${holder.id}`);
         }
 
         const finalPath = path.join(TEMP_VIDEO_DIR, `${fileHash}${getFileExtension(fileName || ".mp4")}`);
@@ -928,16 +970,28 @@ async function processUploadedObject(contentId, key, title) {
 
         const fileHash = await hashFileFromDisk(localPath);
 
-        // A real duplicate means the bytes are already stored and transcoded;
-        // point this row at the existing output instead of encoding again.
-        const existing = await pool.query(
-            `SELECT id, r2_key, metadata, duration_seconds FROM content_items
-              WHERE file_hash = $1 AND id <> $2 AND status = 'ready' LIMIT 1`,
+        /*
+         * Whoever else holds this hash — not just a `ready` one.
+         *
+         * Filtering on status here was the same bug as the chunked path: a row
+         * stuck in `processing` or `failed` was invisible to the lookup, so the
+         * UPDATE below tried to write a hash another row already owned and the
+         * job died on
+         *   duplicate key value violates unique constraint "content_items_file_hash_key"
+         * — reported to the educator as a failed upload with no way to retry.
+         */
+        const holderQ = await pool.query(
+            `SELECT id, r2_key, metadata, duration_seconds, status
+               FROM content_items
+              WHERE file_hash = $1 AND id <> $2
+              LIMIT 1`,
             [fileHash, contentId]
         );
+        const src = holderQ.rows[0];
 
-        if (existing.rows.length > 0) {
-            const src = existing.rows[0];
+        // A real duplicate means the bytes are already stored and transcoded;
+        // point this row at the existing output instead of encoding again.
+        if (src && src.status === 'ready' && src.r2_key) {
             await pool.query(`
                 UPDATE content_items
                 SET status = 'ready', r2_key = $1, metadata = $2, duration_seconds = $3, updated_at = NOW()
@@ -948,6 +1002,16 @@ async function processUploadedObject(contentId, key, title) {
             await r2Client.send(new DeleteObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key })).catch(() => {});
             console.log(`♻️  ${contentId} reused an identical existing video`);
             return;
+        }
+
+        if (src) {
+            // Holds the hash with no usable output behind it. Release it, or
+            // the UNIQUE index blocks this encode and every future one.
+            await pool.query(
+                `UPDATE content_items SET file_hash = NULL, updated_at = NOW() WHERE id = $1`,
+                [src.id]
+            );
+            console.log(`🔓 released file_hash held by ${src.status} content ${src.id}`);
         }
 
         await pool.query(
