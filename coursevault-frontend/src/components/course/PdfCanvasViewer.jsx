@@ -31,6 +31,10 @@ pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker();
  * every device, and no native toolbar offering print or download.
  *
  * @param {ArrayBuffer} data raw PDF bytes
+ * @param {Function} [onRead] called once, when the last page has actually been
+ *   scrolled into view — this is what marks the document read. Opening it is
+ *   not reading it, and a student who bounces off page 1 should not be recorded
+ *   as having finished a forty-page chapter.
  */
 
 /*
@@ -43,8 +47,23 @@ const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 3;
 const ZOOM_STEP = 0.25;
 
-export default function PdfCanvasViewer({ data, title }) {
+export default function PdfCanvasViewer({ data, title, onRead }) {
   const containerRef = useRef(null);
+  /*
+   * onRead through a ref, and a latch so it fires once.
+   *
+   * The callback is an inline arrow from the parent, so depending on it
+   * directly would tear down and rebuild the observer on every render. The
+   * latch is separate from the observer's lifetime because the render effect
+   * re-runs on every zoom change — without it, zooming while the last page is
+   * on screen would re-report the document as read each time.
+   */
+  const onReadRef = useRef(onRead);
+  useEffect(() => { onReadRef.current = onRead; }, [onRead]);
+  const reportedRead = useRef(false);
+
+  // A new document is a new read. Keyed on the bytes, same as the loader.
+  useEffect(() => { reportedRead.current = false; }, [data]);
   const [doc, setDoc] = useState(null);
   const [status, setStatus] = useState('loading'); // loading | ready | error
   const [error, setError] = useState('');
@@ -131,6 +150,7 @@ export default function PdfCanvasViewer({ data, title }) {
     if (!doc) return;
 
     let cancelled = false;
+    let endObserver = null;
 
     (async () => {
       setStatus('loading');
@@ -200,6 +220,36 @@ export default function PdfCanvasViewer({ data, title }) {
         }
 
         setStatus('ready');
+
+        /*
+         * "Read" means the bottom of the document came into view.
+         *
+         * Watched via a 1px sentinel after the last page rather than by
+         * observing the last canvas itself: a tall page can be several screens
+         * high, so no sensible visibility threshold on the canvas is reachable
+         * — 50% of a 3000px page never fits on a phone. Reaching the element
+         * *after* it is unambiguous at any page size, and is what a reader
+         * scrolling to the end actually does.
+         *
+         * A single-page PDF satisfies this as soon as it is displayed, which is
+         * correct: there is nothing further to reach.
+         */
+        if (!cancelled && !reportedRead.current) {
+          const sentinel = document.createElement('div');
+          sentinel.style.height = '1px';
+          sentinel.setAttribute('aria-hidden', 'true');
+          container.appendChild(sentinel);
+
+          endObserver = new IntersectionObserver((entries) => {
+            if (!entries.some((e) => e.isIntersecting)) return;
+            if (!reportedRead.current) {
+              reportedRead.current = true;
+              onReadRef.current?.();
+            }
+            endObserver?.disconnect();
+          });
+          endObserver.observe(sentinel);
+        }
       } catch (err) {
         if (cancelled) return;
         /*
@@ -215,7 +265,10 @@ export default function PdfCanvasViewer({ data, title }) {
       }
     })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      endObserver?.disconnect();
+    };
   }, [doc, zoom]);
 
   const nudge = useCallback((delta) => {

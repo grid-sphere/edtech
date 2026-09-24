@@ -126,6 +126,40 @@ export default function CourseDetailPage() {
     }
   };
 
+  /**
+   * Record that a piece of content was genuinely finished.
+   *
+   * Called by the viewer — on a video's `ended`, or when the last page of a PDF
+   * scrolls into view — never on open. Idempotent on the server (completion is
+   * sticky: once true it stays true), so re-watching costs nothing.
+   *
+   * The tick appears immediately rather than after the round trip, because the
+   * student has just finished and a checkbox that lags by a second reads as
+   * broken. If the save fails it is taken back — showing progress that was
+   * never stored is worse than showing none.
+   */
+  const markContentComplete = (contentId) => {
+    if (!contentId || !course?.id) return;
+    // Already ticked: nothing to do, and no pointless request.
+    if (completedContentIds.has(contentId)) return;
+
+    setCompletedContentIds((prev) => new Set(prev).add(contentId));
+
+    fetchAPI('/video/progress', {
+      method: 'POST',
+      body: JSON.stringify({ contentId, courseId: course.id, completed: true }),
+    })
+      .then(() => loadProgress(course.id)) // resync the overall % from the server
+      .catch((err) => {
+        console.error('[progress] could not record completion for', contentId, err);
+        setCompletedContentIds((prev) => {
+          const next = new Set(prev);
+          next.delete(contentId);
+          return next;
+        });
+      });
+  };
+
   // 🌟 PROGRESS TRACKING: bulk-fetch completed content ids + reuse the
   // enrollments endpoint's already-computed percentage for the header bar.
   const loadProgress = async (courseRecord) => {
@@ -611,50 +645,19 @@ export default function CourseDetailPage() {
             isOpen={expandedModules.includes(module.id)}
             onToggle={() => setExpandedModules(prev => prev.includes(module.id) ? prev.filter(m => m !== module.id) : [...prev, module.id])}
 
-            // 🌟 DIRECT TRACKING INJECTION: Fires the exact second they click "Read" or "Take Quiz"
-            onContentClick={(content) => {
-              setActiveContent(content); // Opens the modal
-
-              // 🌟 FIX: no client-side isEnrolled/role gate here anymore — it was
-              // stale/false at click time and silently skipped the fetch entirely
-              // (confirmed: zero /video/progress requests ever hit the backend).
-              // The backend route already does its own proper authorization
-              // (creator bypass, preview check, real enrollment check) and
-              // returns a clean 403 if the click genuinely isn't authorized —
-              // so we just always attempt it and let the response decide.
-              const contentId = content.id || content.content_id;
-              if (contentId && course?.id) {
-                console.log('[progress] attempting save for', contentId, 'in course', course.id);
-
-                // Reflect completion in the UI immediately, don't wait on the network
-                setCompletedContentIds(prev => new Set(prev).add(contentId));
-
-                fetchAPI('/video/progress', {
-                  method: 'POST',
-                  body: JSON.stringify({
-                    contentId: contentId,
-                    courseId: course.id,
-                    position: 100,
-                    is_completed: true
-                  })
-                })
-                  .then((res) => {
-                    console.log('[progress] saved', contentId, res);
-                    loadProgress(course.id); // resync overall % from the server
-                  })
-                  .catch(err => {
-                    // 🌟 Don't lie to the UI: if the save actually failed, undo the checkmark
-                    console.error('[progress] FAILED to save for content', contentId, err);
-                    setCompletedContentIds(prev => {
-                      const next = new Set(prev);
-                      next.delete(contentId);
-                      return next;
-                    });
-                  });
-              } else {
-                console.warn('[progress] skipped — missing contentId or course.id', { contentId, courseId: course?.id });
-              }
-            }}
+            /*
+             * Opening something is not finishing it.
+             *
+             * This used to POST is_completed:true the instant an item was
+             * tapped, so the whole course marked itself complete as fast as a
+             * student could click down the list — and the progress ring, the
+             * streak and the educator's analytics all measured "files opened",
+             * which is not a thing anybody wanted to know.
+             *
+             * Completion now comes from the viewer, when the video actually
+             * ends or the reader actually reaches the last page of the PDF.
+             */
+            onContentClick={(content) => setActiveContent(content)}
 
             completedContentIds={completedContentIds}
             onProgressRefresh={() => loadProgress(course.id)}
@@ -675,6 +678,9 @@ export default function CourseDetailPage() {
         courseId={course.id}
         isEnrolled={canAccessContent}
         onClose={() => setActiveContent(null)}
+        /* Fired when the video ends or the last PDF page is reached — the
+           viewer is the only thing that knows whether it was actually read. */
+        onCompleted={() => markContentComplete(activeContent?.id)}
       />
 
       {/* Educator Modals */}

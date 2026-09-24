@@ -26,60 +26,82 @@ const SECTIONS = [
  */
 function TabButton({ label, count, active, onClick, onDelete, deleteTitle, tone }) {
   return (
-    <div className="relative shrink-0 flex items-end">
-      <button
-        type="button"
-        onClick={onClick}
-        aria-current={active ? 'page' : undefined}
-        title={label}
-        className={`flex items-center gap-2 border-2 border-b-0 border-black rounded-t-xl font-bold text-sm transition-all
-          ${onDelete ? 'pl-3.5 pr-8' : 'px-4'}
-          ${active
-            ? 'bg-white py-3 -mb-[2px] z-10 shadow-[0px_-2px_0px_0px_#111]'
-            : 'bg-[#E5CFC8] py-2.5 text-gray-700 hover:bg-[#DCC6BE]'}`}
-      >
-        {/*
-          Long chapter names are truncated rather than allowed to stretch the
-          tab. A single tab wide enough to push every other one off-screen is
-          how a strip becomes unusable.
-        */}
-        <span className="truncate max-w-[9rem]">{label}</span>
+    <button
+      type="button"
+      onClick={onClick}
+      aria-current={active ? 'page' : undefined}
+      title={label}
+      className={`relative shrink-0 flex items-center gap-1.5 px-1 pt-1 pb-2.5 font-bold text-sm whitespace-nowrap transition-colors
+        ${active ? 'text-black' : 'text-gray-400 hover:text-gray-600'}`}
+    >
+      {/*
+        Long chapter names are truncated rather than allowed to stretch the
+        tab. A single tab wide enough to push every other one off-screen is
+        how a strip becomes unusable.
+      */}
+      <span className="truncate max-w-[10rem]">{label}</span>
 
-        {count > 0 && (
-          <span
-            className={`shrink-0 min-w-[1.25rem] px-1 py-0.5 rounded-full border border-black text-[10px] leading-none font-black tabular-nums ${
-              active ? 'bg-[#F9E076]' : 'bg-white/70'
-            }`}
-          >
-            {count}
-          </span>
-        )}
-      </button>
+      {/*
+        The count, as a plain number rather than a bordered pill.
+        In a text-only strip a bordered badge is the loudest thing on the row,
+        which inverts the hierarchy — the chapter name is what is being chosen,
+        not how many files are in it.
+      */}
+      {count > 0 && (
+        <span className={`text-xs font-black tabular-nums ${active ? 'text-black/40' : 'text-gray-300'}`}>
+          {count}
+        </span>
+      )}
 
-      {onDelete && (
-        /*
-         * Always visible, never hover-only.
-         *
-         * This used to appear on :hover, which does not exist on a touch
-         * screen — a teacher on a phone or tablet could not delete a tab at
-         * all. It is small and muted until hovered instead, which keeps it
-         * quiet without making it unreachable.
-         */
-        <button
-          type="button"
-          onClick={onDelete}
+      {/*
+        Delete appears only on the tab you are already looking at.
+        Showing an X on every tab puts a destructive control one mis-tap from
+        every label in the strip, and on a borderless row there is no frame to
+        visually separate it from the tab next door. Selecting first is one
+        extra tap for a rare, irreversible action — a trade worth making.
+
+        A span, not a button: this sits inside the tab's own <button>, and
+        nesting buttons is invalid HTML (browsers silently un-nest it, which
+        breaks the click target). role/tabIndex/onKeyDown restore what a real
+        button would have given it.
+      */}
+      {active && onDelete && (
+        <span
+          role="button"
+          tabIndex={0}
           title={deleteTitle}
           aria-label={deleteTitle}
-          className={`absolute right-1.5 rounded-full p-1 transition-colors z-20
-            ${active ? 'bottom-3' : 'bottom-2.5'}
-            ${tone === 'general'
+          onClick={(e) => { e.stopPropagation(); onDelete(e); }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              e.stopPropagation();
+              onDelete(e);
+            }
+          }}
+          className={`ml-0.5 rounded-full p-0.5 transition-colors ${
+            tone === 'general'
               ? 'text-red-600 hover:bg-red-100'
-              : 'text-black/40 hover:text-red-600 hover:bg-red-100'}`}
+              : 'text-black/35 hover:text-red-600 hover:bg-red-100'
+          }`}
         >
-          <X size={13} strokeWidth={3} />
-        </button>
+          <X size={12} strokeWidth={3} />
+        </span>
       )}
-    </div>
+
+      {/*
+        The indicator. Sits flush with the strip's bottom edge so it reads as
+        underlining the label rather than floating under it. Coloured rather
+        than black because the strip's own divider is already a black rule —
+        a black indicator on top of it would be invisible.
+      */}
+      <span
+        aria-hidden="true"
+        className={`absolute left-0 right-0 bottom-0 h-[3px] rounded-full transition-colors ${
+          active ? 'bg-[#F26B4D]' : 'bg-transparent'
+        }`}
+      />
+    </button>
   );
 }
 
@@ -1004,8 +1026,14 @@ export default function CourseAccordion({
             wrapped strip changes height as tabs are added, which shifts the
             content below it every time a chapter is created.
           */}
-          <div className="relative bg-[#F4DFD8] border-b-2 border-black">
-            <div className="flex items-end gap-1.5 overflow-x-auto scrollbar-hide pt-2.5 md:pt-3 px-2.5 md:px-4 pb-0">
+          <div className="relative bg-white border-b-2 border-black">
+            {/*
+              Generous spacing, no dividers between tabs. With no boxes the gap
+              is the only thing separating one label from the next, so it has to
+              be wide enough to read as separation rather than as a wrapped
+              sentence.
+            */}
+            <div className="flex items-stretch gap-5 md:gap-7 overflow-x-auto scrollbar-hide pt-2.5 md:pt-3 px-3 md:px-5 pb-0">
               {/*
                 General is not a folder — it is the folder_id IS NULL bucket, and
                 it is where deleting a chapter sends that chapter's contents. So
@@ -1041,10 +1069,12 @@ export default function CourseAccordion({
               ))}
 
               {isCreator && (
+                /* Matches the tabs rather than competing with them: it sits on
+                   the same baseline as a plain label, just muted. */
                 <button
                   onClick={handleCreateTab}
                   title="Add a chapter tab"
-                  className="shrink-0 self-end mb-0 flex items-center gap-1 px-3 py-2 rounded-t-xl border-2 border-b-0 border-dashed border-black/40 text-black/60 font-bold text-xs hover:border-solid hover:border-black hover:text-black hover:bg-[#F9E076] transition-colors"
+                  className="shrink-0 flex items-center gap-1 px-1 pt-1 pb-2.5 font-bold text-sm whitespace-nowrap text-gray-400 hover:text-black transition-colors"
                 >
                   <Plus size={15} strokeWidth={3} /> Chapter
                 </button>
@@ -1056,7 +1086,7 @@ export default function CourseAccordion({
               scrolls. Without it a cut-off tab reads as a rendering glitch.
               pointer-events-none: it must not swallow taps on the tab beneath.
             */}
-            <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-6 bg-gradient-to-l from-[#F4DFD8] to-transparent md:hidden" />
+            <div className="pointer-events-none absolute right-0 top-0 bottom-[2px] w-8 bg-gradient-to-l from-white to-transparent md:hidden" />
           </div>
 
           <div className="p-3 md:p-8 bg-white min-h-[140px] md:min-h-[300px] relative">

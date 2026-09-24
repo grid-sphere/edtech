@@ -9,7 +9,7 @@ const router = express.Router();
 // POST /api/video/progress
 router.post("/progress", authMiddleware, async (req, res) => {
     try {
-        const { contentId, courseId, position, is_completed } = req.body;
+        const { contentId, courseId, position, is_completed, completed } = req.body;
         // 🌟 BULLETPROOF ID EXTRACTION
         const userId = req.user.id || req.user.userId || req.user.sub;
         const userRole = req.user.role;
@@ -45,7 +45,25 @@ router.post("/progress", authMiddleware, async (req, res) => {
             }
         }
 
-        const finalIsCompleted = (is_completed === true) || (videoDuration > 0 && (position >= videoDuration - 5));
+        /*
+         * Two ways to finish something, and neither is "opened it".
+         *
+         *   - The viewer says so: a video that fired `ended`, or a PDF whose
+         *     last page was scrolled into view. `completed` is the current
+         *     spelling; `is_completed` is kept because a browser tab left open
+         *     across the deploy is still sending it.
+         *   - The watch position reached the end, which catches a student who
+         *     closed the tab on the final seconds before `ended` fired.
+         *
+         * The client is trusted here, as it is in every LMS — this measures
+         * study progress, not exam integrity, and the alternative (refusing
+         * credit unless the server can prove it) mostly punishes people with
+         * bad connections. What matters is that the claim is now made when the
+         * content is finished rather than when it is opened.
+         */
+        const viewerSaysDone = is_completed === true || completed === true;
+        const watchedToEnd = videoDuration > 0 && position >= videoDuration - 5;
+        const finalIsCompleted = viewerSaysDone || watchedToEnd;
 
         await pool.query(`
             INSERT INTO video_progress (user_id, content_id, course_id, position, is_completed, updated_at)

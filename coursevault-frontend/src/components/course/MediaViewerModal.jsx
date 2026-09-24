@@ -4,7 +4,7 @@ import { fetchAPI, BASE_URL, MEDIA_ORIGIN } from '../../services/api.js';
 import Hls from 'hls.js';
 import PdfCanvasViewer from './PdfCanvasViewer.jsx';
 
-export default function MediaViewerModal({ content, courseId, isEnrolled, onClose }) {
+export default function MediaViewerModal({ content, courseId, isEnrolled, onClose, onCompleted }) {
   const [loading, setLoading] = useState(true);
   const [streamUrl, setStreamUrl] = useState(null);
   // A directly-stored MP4 plays natively; HLS.js must not touch it.
@@ -36,6 +36,14 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
    */
   const closeRef = useRef(onClose);
   useEffect(() => { closeRef.current = onClose; }, [onClose]);
+
+  /*
+   * Completion, through a ref for the same reason as onClose: the parent passes
+   * an inline arrow, and a player effect that depended on it would tear down
+   * and rebuild the video element's listeners on every render.
+   */
+  const completedRef = useRef(onCompleted);
+  useEffect(() => { completedRef.current = onCompleted; }, [onCompleted]);
 
   useEffect(() => {
     /*
@@ -231,6 +239,23 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
 
     const videoEl = videoRef.current;
 
+    /*
+     * Watched to the end is what counts as watched.
+     *
+     * Attached before the branch below, not inside it: the progressive-MP4 path
+     * returns early, and a listener added after that return would never reach
+     * direct-uploaded videos — which is most of them.
+     *
+     * `ended` rather than a percentage threshold, because it is the one signal
+     * the browser gives that is unambiguous and cannot be reached by opening
+     * the file and closing it again. A student who skips to the last second
+     * still triggers it; that is true of every video platform, and guarding
+     * against it would mean refusing credit to anyone who legitimately seeks or
+     * rewatches, which is the worse error here.
+     */
+    const handleEnded = () => completedRef.current?.();
+    videoEl.addEventListener('ended', handleEnded);
+
     // Progressive MP4: assign the source and let the browser do the rest.
     // Routing it through HLS.js would fail — there is no manifest to parse.
     if (isProgressive) {
@@ -243,6 +268,7 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
       videoEl.addEventListener('timeupdate', syncProgressive);
       videoEl.addEventListener('loadedmetadata', seekOnce);
       return () => {
+        videoEl.removeEventListener('ended', handleEnded);
         videoEl.removeEventListener('timeupdate', syncProgressive);
         videoEl.removeEventListener('loadedmetadata', seekOnce);
       };
@@ -265,6 +291,7 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
       });
 
       return () => {
+        videoEl.removeEventListener('ended', handleEnded);
         videoEl.removeEventListener('timeupdate', syncTime);
         hls.destroy();
       };
@@ -278,6 +305,7 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
       
       videoEl.addEventListener('loadedmetadata', handleMetadata);
       return () => {
+        videoEl.removeEventListener('ended', handleEnded);
         videoEl.removeEventListener('timeupdate', syncTime);
         videoEl.removeEventListener('loadedmetadata', handleMetadata);
       };
@@ -387,7 +415,13 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
               the iframe worked on a laptop and failed on a phone. */}
           {!loading && !error && isPdf && pdfData && (
             <div className="w-full flex-1 self-stretch" style={{ minHeight: '70vh' }}>
-              <PdfCanvasViewer data={pdfData} title={content.title} />
+              <PdfCanvasViewer
+                data={pdfData}
+                title={content.title}
+                /* Fires when the bottom of the document is reached — that is
+                   what counts as having read it. */
+                onRead={() => completedRef.current?.()}
+              />
             </div>
           )}
         </div>
