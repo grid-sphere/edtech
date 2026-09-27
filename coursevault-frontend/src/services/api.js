@@ -272,9 +272,19 @@ export const notificationsAPI = {
    * A rejected promise here would surface as an unhandled rejection every
    * minute, and a badge that briefly shows nothing is a far smaller problem
    * than a console full of noise or an error toast on a background poll.
+   *
+   * redirectOn401 is the important part. The .catch() below cannot save you
+   * from a 401: fetchAPI clears the token and navigates to /login *before* the
+   * promise rejects, so the handler runs after the damage. This is the request
+   * that fires every minute in the background, unprompted, which makes it by
+   * far the most likely one to catch a transient 401 and throw somebody out
+   * mid-lesson for no reason they could name. A decorative badge has no
+   * business ending a session — if the token is genuinely dead, the next real
+   * request the user makes will say so.
    */
   unreadCount: () =>
-    fetchAPI('/notifications/unread-count').catch(() => ({ unread: 0 })),
+    fetchAPI('/notifications/unread-count', { redirectOn401: false })
+      .catch(() => ({ unread: 0 })),
 
   markRead: (id) => fetchAPI(`/notifications/${id}/read`, { method: 'POST' }),
 

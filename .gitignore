@@ -9,6 +9,18 @@ dist/
 .DS_Store
 *.log
 
+# Database backups.
+#
+# scripts/backup-database.js defaults to writing into the working directory,
+# which is inside this repository. Those files hold every user row — names,
+# email addresses, phone numbers, schools, and bcrypt password hashes — for an
+# audience that is mostly school students. This repository is public. A single
+# `git add .` after a backup would publish all of it, and the history would keep
+# it there after the file was deleted.
+*.sql
+*.dump
+db-backup*
+
 # Whole-repository code dumps.
 #
 # combined_project_code.txt was a concatenation of every source file, which

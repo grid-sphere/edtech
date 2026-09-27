@@ -77,10 +77,13 @@ export default function ProfilePage() {
   }, [user]);
 
   const isStudent = user?.role === 'student';
-  // An account created with a mobile number only. The email field stays
-  // editable in that case, because there is no existing address to protect —
-  // once one is saved it locks like everyone else's.
-  const canAddEmail = !user?.email;
+  /*
+   * Staff can change their address; a student can only add a first one.
+   *
+   * Mirrors the server rule rather than being the rule — the API rejects a
+   * student's changed address regardless of what this input allows.
+   */
+  const canEditEmail = !isStudent || !user?.email;
 
   const saveProfile = async (e) => {
     e.preventDefault();
@@ -94,10 +97,11 @@ export default function ProfilePage() {
         body: JSON.stringify({
           name: name.trim(),
           phone: phone.trim(),
-          // Only sent when there is no address on file. Sending an unchanged
-          // one is harmless, but sending nothing keeps the request honest
-          // about what it is asking to change.
-          ...(canAddEmail && email.trim() ? { email: email.trim() } : {}),
+          // Only sent when this account may actually change it. The server
+          // would reject a student's changed address anyway, but sending a
+          // field that cannot move makes the request claim something it isn't
+          // asking for.
+          ...(canEditEmail ? { email: email.trim() } : {}),
           // class_level is deliberately absent: it is locked, and the server
           // rejects any attempt to move it.
           ...(isStudent ? { board, state, school: school.trim() } : {}),
@@ -221,16 +225,22 @@ export default function ProfilePage() {
               </Field>
 
               {/*
-                Shown but not editable once set. Rendered as plain text rather
-                than a disabled <input> so it does not look like it might
-                become editable; the server rejects a changed address
-                regardless — this is the label on the rule, not the rule.
+                Editable for staff, locked for students once set.
+
+                A student's address is rendered as plain text rather than a
+                disabled <input>, so it does not look like something that might
+                become editable. The server rejects the change regardless —
+                this is the label on the rule, not the rule.
               */}
-              {canAddEmail ? (
+              {canEditEmail ? (
                 <Field
                   icon={Mail}
                   label="Email address"
-                  hint="Optional — but once you save one, it can't be changed."
+                  hint={
+                    user?.email
+                      ? "Used to sign in. Changing it means confirming the new address."
+                      : "Optional. Once saved it can also be used to sign in."
+                  }
                 >
                   <input
                     type="email"

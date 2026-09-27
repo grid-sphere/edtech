@@ -997,75 +997,122 @@ router.put("/profile", authMiddleware, async (req, res) => {
         const nextSchool = "school" in fields.values ? fields.values.school : user.school;
 
         /*
-         * Email is immutable after sign-up.
+         * Email can be changed.
          *
-         * It is the login identifier, so allowing it to change here is an
-         * account-takeover path: anyone reaching an unattended logged-in
-         * browser could repoint the account at their own address. Requiring
-         * the current password narrowed that, but the product decision is
-         * that it simply cannot change.
+         * It was immutable, because it is a login identifier and letting it
+         * move is an account-takeover path: anyone reaching an unattended
+         * logged-in browser could repoint the account at their own address.
+         * That risk has not gone away — this is a deliberate loosening, and the
+         * way back is to restore the `trimmed !== current` rejection below.
          *
-         * Enforced here rather than only by disabling the input, because the
-         * input is a UI affordance — a client can still PUT any body it likes.
-         * A mismatched email is rejected loudly rather than ignored silently,
-         * so a stale client cannot believe it succeeded.
+         * Three things still hold, because without them this becomes a way to
+         * break an account rather than correct one:
+         *   - the address must be well-formed and not already registered;
+         *   - it cannot be cleared unless a phone number remains, or the
+         *     account would have no identifier left to sign in with;
+         *   - changing it clears email_verified, so the new address has to be
+         *     confirmed before it counts. Otherwise anyone could claim an
+         *     address they do not control and receive its reset codes.
          */
+        let nextEmail = user.email;
         if (email !== undefined) {
             const trimmed = String(email).trim().toLowerCase();
-            // `user.email` can now be null — email is optional at signup — so
-            // this must not call .toLowerCase() on it unguarded.
+            // `user.email` can be null — email is optional at signup — so this
+            // must not call .toLowerCase() on it unguarded.
             const current = (user.email ?? "").toLowerCase();
 
-            /*
-             * One exception to immutability: adding an address where there was
-             * none. An account created with only a mobile number has nothing to
-             * take over, so setting the first email is not the risk the rule
-             * exists to prevent — and refusing it would make the optional field
-             * permanently unfillable.
-             */
-            if (current === "" && trimmed !== "") {
-                const emailCheck = normalizeEmail(trimmed);
-                if (!emailCheck.ok) return res.status(400).json({ error: emailCheck.error });
-
-                const taken = await pool.query(
-                    `SELECT id FROM users WHERE email = $1 AND id <> $2`,
-                    [emailCheck.email, userId]
-                );
-                if (taken.rows.length > 0) {
-                    return res.status(409).json({ error: "That email address is already registered." });
+            if (trimmed !== current) {
+                /*
+                 * Students cannot move an address they already have.
+                 *
+                 * The takeover risk is the same for everyone, but the exposure
+                 * is not: students are most of the accounts, they are the ones
+                 * signing in on shared and school machines, and they have no
+                 * reason to change an address mid-course. Staff manage their
+                 * own accounts and are few enough to be accountable.
+                 *
+                 * Adding a first address is still allowed — an account created
+                 * with only a mobile number has nothing to take over, and
+                 * refusing it would make the optional field permanently
+                 * unfillable.
+                 */
+                if (user.role === "student" && current !== "") {
+                    return res.status(403).json({
+                        error: "Your email address cannot be changed. Contact support if you need it updated.",
+                    });
                 }
-                user.pendingEmail = emailCheck.email;
-            } else if (trimmed !== current) {
-                return res.status(403).json({
-                    error: "Your email address cannot be changed. Contact support if you need it updated.",
-                });
+
+                if (trimmed === "") {
+                    if (!nextPhone) {
+                        return res.status(400).json({
+                            error: "Add a mobile number before removing your email, or you will not be able to sign in.",
+                        });
+                    }
+                    nextEmail = null;
+                } else {
+                    const emailCheck = normalizeEmail(trimmed);
+                    if (!emailCheck.ok) return res.status(400).json({ error: emailCheck.error });
+
+                    const taken = await pool.query(
+                        `SELECT id FROM users WHERE email = $1 AND id <> $2`,
+                        [emailCheck.email, userId]
+                    );
+                    if (taken.rows.length > 0) {
+                        return res.status(409).json({ error: "That email address is already registered." });
+                    }
+                    nextEmail = emailCheck.email;
+                }
             }
         }
 
         // --- persist -------------------------------------------------------
-        // An existing email is never overwritten: COALESCE keeps the stored
-        // value whenever pendingEmail is absent.
+        const nameChanged = nextName !== user.name;
+        const emailChanged = (nextEmail ?? "") !== (user.email ?? "");
+
+        /*
+         * $4 is written directly, not through COALESCE.
+         *
+         * COALESCE was there to make "absent" mean "keep the existing address",
+         * which is exactly wrong now that null is a value someone can choose:
+         * it would silently ignore a deliberate clear. `nextEmail` already
+         * defaults to the current address when the field was not sent, so the
+         * keep-it case is handled before the query.
+         *
+         * Whether the address moved is passed in as its own boolean ($8) rather
+         * than worked out in SQL. The obvious version —
+         *
+         *     email_verified = CASE WHEN $4 IS DISTINCT FROM email ...
+         *
+         * — fails with "inconsistent types deduced for parameter $4": assigning
+         * to the column deduces varchar, while the comparison operator deduces
+         * text, and Postgres will not accept one parameter meaning two types.
+         * JavaScript already knows the answer, so asking the database to
+         * re-derive it was never buying anything.
+         */
         const updated = await pool.query(`
             UPDATE users
             SET name = $1,
                 phone = $2,
-                email = COALESCE($4, email),
+                email = $4,
+                email_verified = CASE WHEN $8 THEN FALSE ELSE email_verified END,
                 board = $5,
                 state = $6,
                 school = $7,
                 updated_at = NOW()
             WHERE id = $3
-            RETURNING id, name, email, phone, role, class_level, board, state, school, created_at
-        `, [nextName, nextPhone, userId, user.pendingEmail ?? null, nextBoard, nextState, nextSchool]);
+            RETURNING id, name, email, phone, role, class_level, board, state, school, email_verified, created_at
+        `, [nextName, nextPhone, userId, nextEmail, nextBoard, nextState, nextSchool, emailChanged]);
 
         const profile = updated.rows[0];
 
-        // The name is carried in the token payload, so a rename needs a fresh
-        // one. Email can no longer move, so it can never go stale here.
-        const nameChanged = nextName !== user.name;
+        /*
+         * Both name and email live in the token payload, so either moving makes
+         * the current token stale — it would keep asserting the old address to
+         * every route until it expired, which is now a year away.
+         */
         const response = { success: true, user: profile };
 
-        if (nameChanged) {
+        if (nameChanged || emailChanged) {
             response.token = signSession(profile);
         }
 
