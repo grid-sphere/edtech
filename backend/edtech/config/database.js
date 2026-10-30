@@ -24,17 +24,36 @@ if (!process.env.DATABASE_URL) {
     );
 }
 
+/*
+ * SSL follows the connection string instead of being hardcoded.
+ *
+ * It used to be a flat `ssl: false`, because the self-hosted Postgres rejected
+ * SSL outright. That is fine for a database on a private network and wrong for
+ * a managed one — Neon, Supabase, RDS and friends all require TLS, and an
+ * explicit `ssl: false` overrides whatever `sslmode` the URL asks for, so the
+ * connection fails with a message about the server not supporting SSL that
+ * sounds like the opposite of the real problem.
+ *
+ * Reading it from the URL means moving between the two is a .env change and
+ * nothing else.
+ *
+ * rejectUnauthorized stays true: Neon and the other managed providers present
+ * certificates from public CAs that Node already trusts, so verification costs
+ * nothing. Turning it off — which half the tutorials tell you to do — accepts
+ * any certificate at all and quietly removes the protection TLS was for.
+ * DATABASE_SSL_INSECURE exists for a provider using a private CA, and should be
+ * a last resort.
+ */
+const url = process.env.DATABASE_URL;
+const wantsSsl =
+    /[?&]sslmode=(require|verify-ca|verify-full)\b/.test(url) ||
+    process.env.DATABASE_SSL === "true";
+
 const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    /*
-     * The database server rejects SSL outright, so it has to be off.
-     *
-     * That means the connection is unencrypted: acceptable only while the
-     * database is reachable on a private network or from the app host alone.
-     * If it ever becomes reachable from the internet, enable SSL there and
-     * change this to { rejectUnauthorized: true }.
-     */
-    ssl: false,
+    connectionString: url,
+    ssl: wantsSsl
+        ? { rejectUnauthorized: process.env.DATABASE_SSL_INSECURE !== "true" }
+        : false,
 });
 
 export default pool;

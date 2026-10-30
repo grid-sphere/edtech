@@ -189,7 +189,16 @@ async function setupDatabase() {
         await pool.query(`ALTER TABLE enrollments ADD COLUMN IF NOT EXISTS last_accessed TIMESTAMPTZ`);
         await pool.query(`ALTER TABLE enrollments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`);
         await pool.query(`ALTER TABLE content_items ADD COLUMN IF NOT EXISTS folder_id UUID`);
-        await pool.query(`ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS folder_id UUID`);
+        /*
+         * quizzes.folder_id is added further down, after the quizzes table is
+         * created — not here.
+         *
+         * It used to sit on this line, which works on every database that
+         * already has the table and fails on a brand new one: CREATE TABLE
+         * quizzes is 20 lines below, so on an empty database this aborted
+         * setupDatabase with 'relation "quizzes" does not exist' and every
+         * table after it silently never got made.
+         */
         await pool.query(`ALTER TABLE content_items ADD COLUMN IF NOT EXISTS priority INT DEFAULT 0`);
 
         await pool.query(`
@@ -338,6 +347,11 @@ async function setupDatabase() {
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS board VARCHAR(40)`);
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS state VARCHAR(80)`);
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS school VARCHAR(255)`);
+
+        // Which tab a quiz belongs to. Moved here from above the quizzes
+        // CREATE, where it could only ever work on a database that already
+        // had the table.
+        await pool.query(`ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS folder_id UUID`);
 
         // Quizzes need a sort key so they can be interleaved with PDFs and
         // videos in one ordered list. content_items already has `priority`;
@@ -540,6 +554,28 @@ async function setupDatabase() {
          * A school that genuinely wants them all gone ends up with an empty
          * table, and that is a legitimate state rather than a signal to reseed.
          */
+        /*
+         * Created here rather than with the other settings tables further down.
+         *
+         * The seeding below reads and writes platform_settings, and the CREATE
+         * used to sit ~240 lines after this point — so on an empty database
+         * this whole block failed with 'relation "platform_settings" does not
+         * exist'. It worked everywhere it was ever tested because those
+         * databases already had the table.
+         *
+         * IF NOT EXISTS, so an existing install is unaffected.
+         */
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS platform_settings (
+                id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+                theme VARCHAR(40) DEFAULT 'default',
+                mode VARCHAR(32) DEFAULT 'light',
+                density VARCHAR(32) DEFAULT 'comfortable',
+                updated_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+
         /*
          * Marked, not inferred from the table being empty.
          *
@@ -788,16 +824,11 @@ async function setupDatabase() {
          * option these need widening to match. 32 leaves room to do that
          * without another migration.
          */
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS platform_settings (
-                id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-                theme VARCHAR(40) DEFAULT 'default',
-                mode VARCHAR(32) DEFAULT 'light',
-                density VARCHAR(32) DEFAULT 'comfortable',
-                updated_by UUID REFERENCES users(id) ON DELETE SET NULL,
-                updated_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        `);
+        /*
+         * platform_settings is created earlier now, above the category seeding
+         * that reads and writes it — see the comment there. This block keeps
+         * only the migrations that widen it.
+         */
 
         /*
          * Widen columns on installs created before the fix.
@@ -908,6 +939,160 @@ async function setupDatabase() {
             CREATE INDEX IF NOT EXISTS idx_support_ticket_messages_ticket
                 ON support_ticket_messages(ticket_id, created_at)
         `);
+
+        /* ============================================================
+         * Schema that only ever existed in hand-run migration scripts.
+         *
+         * migrate.js and migrate-progress.js were run once, by hand, against
+         * the live database — and never folded back in here. The result is a
+         * schema split across three files where only one of them runs
+         * automatically, so every database created from scratch since then has
+         * been missing columns the application writes to on ordinary paths.
+         *
+         * It stayed invisible because nobody built a fresh database: every
+         * environment was a copy of one that had already had the scripts run
+         * against it. The first genuinely empty database (Neon) failed on
+         * `column c.parent_course_id does not exist` from the dashboard.
+         *
+         * Everything below is idempotent, so an existing install is unchanged.
+         * Placed last, after every CREATE TABLE above, so the tables exist.
+         * ============================================================ */
+
+        // Links a sub-course ("Mathematics") to its parent class ("9th Class").
+        // 36 references across 7 files — enrolment inheritance, the dashboard,
+        // notifications and access checks all read it.
+        await pool.query(
+            `ALTER TABLE courses ADD COLUMN IF NOT EXISTS parent_course_id UUID REFERENCES courses(id) DEFAULT NULL`
+        );
+
+        /*
+         * Columns the users table grew by hand.
+         *
+         * last_login is the instructive one: routes/auth.js carries a comment
+         * saying it "has existed since the first schema", and it never did.
+         * stampLastLogin() swallows its own errors, so every login has been
+         * failing to record one, silently, for as long as that comment has been
+         * wrong — and routes/analytics.js selects the column outright, which
+         * breaks the Students view on any database that was built rather than
+         * copied.
+         *
+         * is_active and phone_verified default to the values the old rows
+         * carried, so a restored backup reads the same as it did before.
+         */
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login TIMESTAMPTZ`);
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE`);
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT FALSE`);
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT`);
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT`);
+
+        /*
+         * Which payment bought this enrolment.
+         *
+         * VARCHAR to match payment_orders.order_id, which is the provider's own
+         * reference string rather than a uuid — PayU and Razorpay both issue
+         * their own format, so this is not a foreign key to our ids.
+         *
+         * No constraint back to payment_orders: a free enrolment has no order
+         * at all, and a manually granted one has no order either.
+         */
+        await pool.query(`ALTER TABLE enrollments ADD COLUMN IF NOT EXISTS order_id VARCHAR(255)`);
+
+        /*
+         * Chapter tabs had no order of their own.
+         *
+         * The list endpoint sorted them by created_at, which is not an order so
+         * much as an accident: whatever sequence a teacher happened to create
+         * them in was the sequence students saw for ever, and nothing could
+         * change it. Adding "Revision" early meant it sat before chapter one.
+         */
+        await pool.query(`ALTER TABLE folders ADD COLUMN IF NOT EXISTS sort_order INT DEFAULT 0`);
+
+        /*
+         * Backfill from creation time, once.
+         *
+         * Every existing row defaults to 0, so without this they would all tie
+         * and fall back to an arbitrary order — the tabs would appear to
+         * shuffle themselves the moment this shipped. Numbering by created_at
+         * reproduces exactly what was on screen before, so the change is
+         * invisible until someone actually moves a tab.
+         *
+         * Guarded on "every row in this module is still 0", so it runs once and
+         * never undoes a teacher's arrangement afterwards.
+         */
+        await pool.query(`
+            WITH unordered AS (
+                SELECT module_id
+                  FROM folders
+                 GROUP BY module_id
+                HAVING BOOL_AND(COALESCE(sort_order, 0) = 0) AND COUNT(*) > 1
+            ),
+            numbered AS (
+                SELECT f.id,
+                       ROW_NUMBER() OVER (PARTITION BY f.module_id ORDER BY f.created_at) - 1 AS ord
+                  FROM folders f
+                  JOIN unordered u ON u.module_id = f.module_id
+            )
+            UPDATE folders SET sort_order = n.ord
+              FROM numbered n
+             WHERE folders.id = n.id
+        `);
+
+        // Written by the completion tracking in routes/video.js. Without it,
+        // every attempt to record that a student finished a video or PDF fails.
+        await pool.query(
+            `ALTER TABLE video_progress ADD COLUMN IF NOT EXISTS is_completed BOOLEAN DEFAULT FALSE`
+        );
+
+        // Quiz questions can carry a diagram.
+        await pool.query(
+            `ALTER TABLE quiz_questions ADD COLUMN IF NOT EXISTS image_url TEXT`
+        );
+
+        // Stamped whenever an attempt changes, by the submit/answer routes.
+        await pool.query(
+            `ALTER TABLE quiz_attempts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()`
+        );
+
+        /*
+         * What makes `ON CONFLICT (attempt_id, question_id)` legal.
+         *
+         * routes/quiz.js uses that clause in two places so a re-answered
+         * question updates its row instead of duplicating. Postgres rejects
+         * ON CONFLICT outright when no matching unique constraint exists, so
+         * without this every quiz submission errors.
+         *
+         * ADD CONSTRAINT has no IF NOT EXISTS, so it is guarded by a lookup
+         * rather than by swallowing the error — catching everything here would
+         * also hide a genuine failure, such as the constraint being rejected
+         * because existing rows already violate it.
+         */
+        const quizAnswerUnique = await pool.query(
+            `SELECT 1 FROM pg_constraint WHERE conname = 'quiz_answers_attempt_question_unique'`
+        );
+        if (quizAnswerUnique.rows.length === 0) {
+            await pool.query(
+                `ALTER TABLE quiz_answers
+                 ADD CONSTRAINT quiz_answers_attempt_question_unique UNIQUE (attempt_id, question_id)`
+            );
+        }
+
+        // From migrate-progress.js. content_id is deliberately not a foreign
+        // key: that script created it without one, and adding the reference now
+        // would fail on any install holding rows for since-deleted content.
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS content_progress (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                course_id UUID REFERENCES courses(id) ON DELETE CASCADE,
+                content_id UUID NOT NULL,
+                is_completed BOOLEAN DEFAULT true,
+                completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, content_id)
+            )
+        `);
+        await pool.query(
+            `CREATE INDEX IF NOT EXISTS idx_content_progress_course ON content_progress(course_id, user_id)`
+        );
 
         console.log("✅ Database schema ready");
     } catch (err) {

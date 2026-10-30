@@ -60,6 +60,75 @@ router.get("/courses/:courseId/modules", async (req, res) => {
     }
 });
 
+/**
+ * PUT /api/modules/reorder — set the order of chapters within one course.
+ *
+ * Body: { courseId, orderedIds: [moduleId, ...] }
+ *
+ * Registered BEFORE `/:id` on purpose. Express matches in registration order,
+ * so putting this after would let `/:id` swallow it — the request would arrive
+ * at the update handler with id === "reorder", fail to find that module, and
+ * answer 404 for a route that plainly exists. The same trap is documented in
+ * routes/content.js for stream-image.
+ *
+ * One statement rather than a loop. Twenty chapters meant twenty round trips,
+ * and a connection that died halfway left the list half-reordered — which is
+ * worse than not reordering at all, because the order it lands in is one nobody
+ * chose. A single UPDATE ... FROM (VALUES ...) is atomic by construction.
+ */
+router.put("/reorder", authMiddleware, async (req, res) => {
+    try {
+        const { courseId, orderedIds } = req.body;
+
+        if (!courseId) return res.status(400).json({ error: "courseId is required" });
+        if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+            return res.status(400).json({ error: "orderedIds array is required" });
+        }
+
+        /*
+         * Ownership is checked against the course, not each module.
+         *
+         * authMiddleware cannot help here: there is no :id in the path for it
+         * to resolve, so req.isCourseCreator is never set for this route.
+         */
+        const course = await pool.query(
+            `SELECT educator_id FROM courses WHERE id = $1 AND is_active = true`,
+            [courseId]
+        );
+        if (course.rows.length === 0) {
+            return res.status(404).json({ error: "Course not found" });
+        }
+        if (!canManage(course.rows[0].educator_id, req.user)) {
+            return res.status(403).json({ error: "Only the course owner can reorder its chapters" });
+        }
+
+        /*
+         * The WHERE clause pins the update to this course.
+         *
+         * Without it, a caller could pass any module id at all and silently
+         * renumber chapters in somebody else's course — the ids are the only
+         * thing being trusted, so they have to be constrained to the course we
+         * just authorised.
+         */
+        const { rowCount } = await pool.query(
+            `UPDATE modules AS m
+                SET module_order = v.ord, updated_at = NOW()
+               FROM (
+                    SELECT unnest($2::uuid[]) AS id,
+                           generate_subscripts($2::uuid[], 1) - 1 AS ord
+               ) AS v
+              WHERE m.id = v.id
+                AND m.course_id = $1::uuid`,
+            [courseId, orderedIds]
+        );
+
+        res.json({ success: true, reordered: rowCount });
+    } catch (err) {
+        console.error("Module reorder error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // PUT /api/modules/:id
 router.put("/:id", authMiddleware, async (req, res) => {
     try {

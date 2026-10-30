@@ -22,7 +22,7 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import pool from "../config/database.js";
 import { r2Client, R2_BUCKET_NAME } from "../config/r2.js";
-import authMiddleware from "../middleware/auth.js";
+import authMiddleware, { authOnly, canManage } from "../middleware/auth.js";
 import { activeEnrolmentSql } from "../utils/enrollmentAccess.js";
 import { notifyCourseStudents } from "../utils/notify.js";
 
@@ -1050,11 +1050,82 @@ router.get("/", async (req, res) => {
 // them, so tabs stopped listing, could not be created, renamed, deleted or
 // moved between, and the up/down reorder arrows silently did nothing.
 
+/**
+ * PUT /api/content/folders/reorder — set the left-to-right order of a module's
+ * chapter tabs.
+ *
+ * Body: { moduleId, orderedIds: [folderId, ...] }
+ *
+ * Declared before the `/folders/:moduleId` routes below. Express matches in
+ * registration order, and although this one is a PUT while the lister is a GET,
+ * the rename handler further down is also a PUT on a `/folders/:id` shape —
+ * registered first, it would capture this call with id === "reorder".
+ *
+ * authOnly, not authMiddleware: there is no content id here, and
+ * authMiddleware's parameter inference would read "reorder" as a content id,
+ * find no such row, and refuse the request with "you do not have permission to
+ * view or manage this content" — the exact misclassification documented at the
+ * top of middleware/auth.js.
+ */
+router.put("/folders/reorder", authOnly, async (req, res) => {
+    try {
+        const { moduleId, orderedIds } = req.body;
+
+        if (!moduleId) return res.status(400).json({ error: "moduleId is required" });
+        if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+            return res.status(400).json({ error: "orderedIds array is required" });
+        }
+
+        // Ownership comes from the module's course, which is the only thing
+        // that knows who may rearrange these.
+        const owner = await pool.query(
+            `SELECT c.educator_id
+               FROM modules m
+               JOIN courses c ON c.id = m.course_id
+              WHERE m.id = $1 AND m.is_active = true`,
+            [moduleId]
+        );
+        if (owner.rows.length === 0) {
+            return res.status(404).json({ error: "Module not found" });
+        }
+        if (!canManage(owner.rows[0].educator_id, req.user)) {
+            return res.status(403).json({ error: "Only the course owner can reorder chapters" });
+        }
+
+        /*
+         * One statement, and pinned to this module.
+         *
+         * The ids arrive from the client and are the only thing being trusted,
+         * so `AND f.module_id = $1` is what stops a caller renumbering tabs in
+         * a module they were never authorised for.
+         */
+        const { rowCount } = await pool.query(
+            `UPDATE folders AS f
+                SET sort_order = v.ord
+               FROM (
+                    SELECT unnest($2::uuid[]) AS id,
+                           generate_subscripts($2::uuid[], 1) - 1 AS ord
+               ) AS v
+              WHERE f.id = v.id
+                AND f.module_id = $1::uuid`,
+            [moduleId, orderedIds]
+        );
+
+        res.json({ success: true, reordered: rowCount });
+    } catch (err) {
+        console.error("Folder reorder error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // GET /api/content/folders/:moduleId  — list a module's tabs
 router.get("/folders/:moduleId", async (req, res) => {
     try {
         const result = await pool.query(
-            `SELECT * FROM folders WHERE module_id = $1 ORDER BY created_at ASC`,
+            // created_at is the tiebreak, not the sort: two tabs can share a
+            // sort_order briefly while a reorder is in flight, and falling back
+            // to creation time keeps that moment stable instead of flickering.
+            `SELECT * FROM folders WHERE module_id = $1 ORDER BY sort_order ASC, created_at ASC`,
             [req.params.moduleId]
         );
         res.json({ success: true, folders: result.rows });

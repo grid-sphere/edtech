@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Video, FileText, HelpCircle, Plus, Edit, Trash2, FilePlus, X, ChevronUp, ChevronDown, CheckCircle2 } from 'lucide-react';
 import { formatSize } from '../../utils/format';
 import { fetchAPI } from '../../services/api.js';
@@ -24,14 +24,38 @@ const SECTIONS = [
  * @param {Function|null} onDelete  omitted for students, and for General while
  *   it is empty — there would be nothing to delete
  */
-function TabButton({ label, count, active, onClick, onDelete, deleteTitle, tone }) {
+function TabButton({
+  label, count, active, onClick, onDelete, deleteTitle, tone,
+  draggable, onDragStart, onDragEnter, onDragEnd, dragging, dropTarget,
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
       aria-current={active ? 'page' : undefined}
-      title={label}
+      title={draggable ? `${label} — drag to reorder` : label}
+      /*
+       * Drag to slide a chapter into place.
+       *
+       * dragEnter rather than dragOver does the reordering: dragOver fires
+       * continuously for as long as the pointer sits over an element, so
+       * reordering from it swaps the same pair dozens of times a second and
+       * the strip jitters. dragEnter fires once, on crossing a boundary,
+       * which is exactly when the order should change.
+       *
+       * No drag image is set, so the browser uses a translucent copy of the
+       * tab — which is the "sliding" affordance; the real tab underneath has
+       * already moved to the new position by then.
+       */
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragEnter={onDragEnter}
+      onDragEnd={onDragEnd}
+      onDragOver={draggable ? (e) => e.preventDefault() : undefined}
       className={`relative shrink-0 flex items-center gap-1.5 px-1 pt-1 pb-2.5 font-bold text-sm whitespace-nowrap transition-colors
+        ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}
+        ${dragging ? 'opacity-40' : ''}
+        ${dropTarget ? 'bg-black/5 rounded-t' : ''}
         ${active ? 'text-black' : 'text-gray-400 hover:text-gray-600'}`}
     >
       {/*
@@ -179,6 +203,70 @@ export default function CourseAccordion({
       if (res.folder) setActiveTabId(res.folder.id);
     } catch (err) {
       alert(err.message || 'Failed to create tab');
+    }
+  };
+
+  /*
+   * Drag-to-reorder for the chapter tabs.
+   *
+   * dragId is the tab being carried; orderBeforeDrag is the arrangement to
+   * return to if the save fails — captured at the start rather than derived at
+   * the end, because by then the list has already been rearranged in place.
+   */
+  const [dragId, setDragId] = useState(null);
+  const orderBeforeDrag = useRef(null);
+
+  const handleTabDragStart = (folderId) => {
+    orderBeforeDrag.current = folders;
+    setDragId(folderId);
+  };
+
+  /** Slide the carried tab into this one's slot. Reorders on screen only. */
+  const handleTabDragEnter = (overId) => {
+    if (!dragId || dragId === overId) return;
+    setFolders((current) => {
+      const from = current.findIndex((f) => f.id === dragId);
+      const to = current.findIndex((f) => f.id === overId);
+      if (from < 0 || to < 0) return current;
+      const next = [...current];
+      // Splice rather than swap: dragging across three tabs should push the
+      // others along one at a time, not trade places with whatever is under
+      // the pointer and leave the middle one stranded.
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  };
+
+  /**
+   * Commit whatever arrangement the drag ended on.
+   *
+   * Fires on dragEnd rather than drop: dragEnd always runs — including when
+   * the tab is released outside the strip or the drag is cancelled with Escape
+   * — so the order on screen is never left unsaved.
+   */
+  const handleTabDragEnd = async () => {
+    const previous = orderBeforeDrag.current;
+    setDragId(null);
+    orderBeforeDrag.current = null;
+    if (!previous) return;
+
+    const unchanged =
+      previous.length === folders.length &&
+      previous.every((f, i) => f.id === folders[i].id);
+    if (unchanged) return;
+
+    try {
+      await fetchAPI('/content/folders/reorder', {
+        method: 'PUT',
+        body: JSON.stringify({ moduleId: module.id, orderedIds: folders.map((f) => f.id) }),
+      });
+    } catch (err) {
+      // Snap back rather than leave an order on screen that was never stored;
+      // the next load would silently undo it anyway.
+      console.error('[folders] reorder failed', err);
+      setFolders(previous);
+      alert(err.message || 'Could not save the new chapter order.');
     }
   };
 
@@ -1065,6 +1153,14 @@ export default function CourseAccordion({
                   onClick={() => setActiveTabId(folder.id)}
                   onDelete={isCreator ? (e) => handleDeleteTab(e, folder.id) : null}
                   deleteTitle={`Delete "${folder.title}"`}
+                  /* Only the creator can drag, and only when there is somewhere
+                     to drag to. */
+                  draggable={isCreator && folders.length > 1}
+                  dragging={dragId === folder.id}
+                  dropTarget={Boolean(dragId) && dragId !== folder.id}
+                  onDragStart={() => handleTabDragStart(folder.id)}
+                  onDragEnter={() => handleTabDragEnter(folder.id)}
+                  onDragEnd={handleTabDragEnd}
                 />
               ))}
 

@@ -22,7 +22,56 @@ router.get("/students", authMiddleware, async (req, res) => {
             return res.status(403).json({ error: "Access denied. Only educators can view analytics." });
         }
 
+        /*
+         * Every student-course pair with an enrolment OR a payment attempt.
+         *
+         * This used to be `FROM enrollments`, which answers "who is studying"
+         * and silently refuses the question a teacher actually asks first:
+         * who tried to buy this and did not finish. A student who opened
+         * checkout and abandoned it has no enrolment row, so they did not
+         * appear here at all — the single most useful row in the table was the
+         * one that could never be in it.
+         *
+         * payment_orders has recorded those all along. A row is written at
+         * 'created', before the student ever reaches the payment page, and only
+         * moves to 'completed' or 'failed' afterwards — so one still sitting at
+         * 'created' is precisely an abandoned checkout.
+         */
+        const isAdmin = req.user.role === "admin";
+
         const { rows } = await pool.query(`
+            WITH scope AS (
+                -- An admin runs the school and sees all of it; a teacher sees
+                -- their own. Scoping an admin to courses they personally
+                -- created showed them an empty table.
+                SELECT c.id FROM courses c
+                 WHERE c.is_active = true
+                   AND ($2::boolean OR c.educator_id = $1)
+            ),
+            pairs AS (
+                SELECT e.user_id, e.course_id FROM enrollments e
+                 WHERE e.course_id IN (SELECT id FROM scope)
+                UNION
+                SELECT po.user_id, po.course_id FROM payment_orders po
+                 WHERE po.course_id IN (SELECT id FROM scope)
+                   AND po.user_id IS NOT NULL
+            ),
+            pay AS (
+                -- One row per student-course, summarising every attempt.
+                SELECT
+                    po.user_id,
+                    po.course_id,
+                    COUNT(*)::int                                         AS payment_attempts,
+                    MAX(po.created_at)                                    AS last_attempt_at,
+                    MAX(po.created_at) FILTER (WHERE po.status = 'completed') AS paid_at,
+                    COUNT(*) FILTER (WHERE po.status = 'failed')::int      AS failed_attempts,
+                    COUNT(*) FILTER (WHERE po.status = 'created')::int     AS abandoned_attempts,
+                    -- The most recent outcome, which is what the column shows.
+                    (ARRAY_AGG(po.status ORDER BY po.created_at DESC))[1]  AS last_payment_status,
+                    MAX(po.amount) FILTER (WHERE po.status = 'completed')  AS paid_amount
+                  FROM payment_orders po
+                 GROUP BY po.user_id, po.course_id
+            )
             SELECT
                 e.id            AS enrollment_id,
                 u.id            AS student_id,
@@ -40,6 +89,16 @@ router.get("/students", authMiddleware, async (req, res) => {
                 e.status,
                 e.payment_status,
                 e.amount_paid,
+                COALESCE(pay.payment_attempts, 0)    AS payment_attempts,
+                COALESCE(pay.failed_attempts, 0)     AS failed_attempts,
+                COALESCE(pay.abandoned_attempts, 0)  AS abandoned_attempts,
+                pay.last_attempt_at,
+                pay.paid_at,
+                pay.last_payment_status,
+                pay.paid_amount,
+                -- Enrolled without ever paying: a free course, or access
+                -- granted by hand. Worth distinguishing from a completed sale.
+                (e.id IS NOT NULL AND pay.user_id IS NULL) AS enrolled_without_payment,
                 /*
                  * Computed, not stored. There is no progress column on
                  * enrollments — an earlier version of this file selected one
@@ -61,19 +120,27 @@ router.get("/students", authMiddleware, async (req, res) => {
                      WHERE qa.user_id = u.id AND m.course_id = c.id
                        AND qa.status = 'completed'
                 ) AS quizzes_done
-            FROM enrollments e
-            JOIN users   u      ON u.id = e.user_id
-            JOIN courses c      ON c.id = e.course_id
+            FROM pairs p
+            JOIN users   u ON u.id = p.user_id
+            JOIN courses c ON c.id = p.course_id
+            -- LEFT, because a pair can exist on a payment attempt alone.
+            LEFT JOIN enrollments e  ON e.user_id = p.user_id AND e.course_id = p.course_id
+            LEFT JOIN pay            ON pay.user_id = p.user_id AND pay.course_id = p.course_id
             LEFT JOIN courses parent ON parent.id = c.parent_course_id
-            WHERE c.educator_id = $1
-              AND c.is_active = true
             ORDER BY
-                -- Anyone who has never signed in sorts to the top: they are the
-                -- ones a teacher needs to chase, and burying them under active
-                -- students is the opposite of useful.
+                /*
+                 * Unfinished business first.
+                 *
+                 * Someone who tried to pay and did not complete is the most
+                 * actionable row in this table — it is a sale a message might
+                 * still recover — so it sorts above everything. Then students
+                 * who have never signed in, who need chasing for a different
+                 * reason. Settled rows come last.
+                 */
+                (e.id IS NULL AND pay.user_id IS NOT NULL) DESC,
                 u.last_login NULLS FIRST,
                 u.name ASC
-        `, [req.user.id]);
+        `, [req.user.id, isAdmin]);
 
         res.json({ success: true, students: rows });
     } catch (err) {
