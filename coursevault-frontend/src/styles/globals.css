@@ -84,18 +84,12 @@
 
 /* Math display in quiz questions and options */
 .math-display {
-  display: inline-block;
-  vertical-align: middle;
+  display: inline;
+  vertical-align: baseline;
 }
 
 .math-display .katex {
   font-size: 1.15em;
-  line-height: 1.5;
-}
-
-.math-display .katex-display .katex {
-  font-size: 1.4em;
-  line-height: 1.6;
 }
 
 /* For block equations (display mode) */
