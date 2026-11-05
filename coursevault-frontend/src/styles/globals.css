@@ -89,7 +89,9 @@
 }
 
 .math-display .katex {
-  font-size: 1.15em;
+  font-size: 1em;
+  vertical-align: -0.25em;
+  line-height: inherit;
 }
 
 /* For block equations (display mode) */
@@ -286,21 +288,10 @@
   }
 }
 
-/* Fix for KaTeX rendering in inputs */
-.katex-html {
-  display: inline-block;
-}
-
 /* Ensure equations don't overflow */
 .math-display {
   max-width: 100%;
   overflow-wrap: break-word;
-}
-
-.math-display .katex .katex-html {
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 2px 0;
 }
 
 /* Selection highlight for math */
