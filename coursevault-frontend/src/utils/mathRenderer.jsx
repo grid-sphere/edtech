@@ -729,7 +729,8 @@ function isMathToken(token) {
   if (/[∫∬∮∑∏√∞±×÷≤≥≠≈≡∈∉⊂⊆∪∩∀∃∠⊥°π]/.test(t)) return true;
   if (/^[(){}[\]|]+$/.test(t)) return true; // lone delimiters
   if (/^[+\-*/=<>]+$/.test(t)) return true; // lone operators
-  if (/^\d/.test(t)) return true; // starts with a digit
+  // Do not automatically treat standalone numbers as mathematical expressions.
+  // Numbers will be classified as math contextually inside renderProseWithMath().
   return false;
 }
 
@@ -770,13 +771,36 @@ function renderProseWithMath(text) {
     return braceBalance(joined) !== 0 || !leftRightIsSound(joined);
   };
 
-  for (const token of tokens) {
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+
     if (/^\s+$/.test(token)) {
       if (buffer.length === 0) out += token;
       continue;
     }
 
-    if (bufferIsOpen() || isMathToken(token) || (buffer.length > 0 && isNeutralToken(token))) {
+    const isNumericToken = /^\d+(?:[.,]\d+)*[.,:;?!]*$/.test(token);
+
+    let nextIndex = i + 1;
+    while (nextIndex < tokens.length && /^\s+$/.test(tokens[nextIndex])) {
+      nextIndex++;
+    }
+
+    const nextToken = tokens[nextIndex] || '';
+
+    const isNumericMath =
+      isNumericToken &&
+      (
+        buffer.length > 0 ||
+        /^[+\-*/=<>×÷^]/.test(nextToken)
+      );
+
+    if (
+      bufferIsOpen() ||
+      isMathToken(token) ||
+      isNumericMath ||
+      (buffer.length > 0 && isNeutralToken(token))
+    ) {
       buffer.push(token);
       continue;
     }
