@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Video, FileText, HelpCircle, Plus, Edit, Trash2, FilePlus, X, ChevronUp, ChevronDown, CheckCircle2 } from 'lucide-react';
+import { Video, FileText, HelpCircle, Plus, Edit, Trash2, FilePlus, X, ChevronUp, ChevronDown, CheckCircle2, Pencil } from 'lucide-react';
 import { formatSize } from '../../utils/format';
 import { fetchAPI } from '../../services/api.js';
 import InlineVideoPlayer from './InlineVideoPlayer.jsx';
@@ -27,13 +27,87 @@ const SECTIONS = [
 function TabButton({
   label, count, active, onClick, onDelete, deleteTitle, tone,
   draggable, onDragStart, onDragEnter, onDragEnd, dragging, dropTarget,
+  onRename,
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(label);
+  const [saving, setSaving] = useState(false);
+  // Enter saves and then the input unmounts, which fires blur — without this
+  // guard that blur would send the same rename a second time.
+  const settled = useRef(false);
+
+  const startEditing = () => {
+    if (!onRename) return;
+    setDraft(label);
+    settled.current = false;
+    setEditing(true);
+  };
+
+  const finish = async (save) => {
+    if (settled.current) return;
+    settled.current = true;
+    const next = draft.trim();
+    if (!save || !next || next === label) {
+      setEditing(false);
+      return;
+    }
+    setSaving(true);
+    try {
+      await onRename(next);
+      setEditing(false);
+    } catch (err) {
+      alert(err.message || 'Could not rename this chapter.');
+      // Stay in the box with the text they typed, so a failed save is not
+      // also a lost edit.
+      settled.current = false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  /*
+   * While editing, the tab is a plain div holding an input.
+   * An <input> inside a <button> is invalid HTML, and the button would also
+   * swallow the space bar and steal clicks meant for the text cursor.
+   */
+  if (editing) {
+    return (
+      <div className="relative shrink-0 flex items-center px-1 pt-1 pb-2.5">
+        <input
+          autoFocus
+          onFocus={(e) => e.target.select()}
+          value={draft}
+          disabled={saving}
+          maxLength={255}
+          aria-label="Chapter name"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+            if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+          }}
+          onBlur={() => finish(true)}
+          style={{ width: `${Math.min(Math.max(draft.length, 6), 28) + 2}ch` }}
+          className="font-bold text-sm text-black bg-white border-b-2 border-black/30 focus:border-[#F26B4D] outline-none px-0.5 disabled:opacity-50"
+        />
+        <span
+          aria-hidden="true"
+          className="absolute left-0 right-0 bottom-0 h-[3px] rounded-full bg-[#F26B4D]"
+        />
+      </div>
+    );
+  }
+
   return (
     <button
       type="button"
       onClick={onClick}
+      onDoubleClick={onRename ? startEditing : undefined}
       aria-current={active ? 'page' : undefined}
-      title={draggable ? `${label} — drag to reorder` : label}
+      title={
+        [label, draggable && 'drag to reorder', onRename && 'double-click to rename']
+          .filter(Boolean)
+          .join(' — ')
+      }
       /*
        * Drag to slide a chapter into place.
        *
@@ -89,6 +163,27 @@ function TabButton({
         breaks the click target). role/tabIndex/onKeyDown restore what a real
         button would have given it.
       */}
+      {/* Rename, shown on the active tab only for the same reason as delete. */}
+      {active && onRename && (
+        <span
+          role="button"
+          tabIndex={0}
+          title={`Rename "${label}"`}
+          aria-label={`Rename "${label}"`}
+          onClick={(e) => { e.stopPropagation(); startEditing(); }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              e.stopPropagation();
+              startEditing();
+            }
+          }}
+          className="ml-0.5 rounded-full p-0.5 text-black/35 hover:text-black hover:bg-black/5 transition-colors"
+        >
+          <Pencil size={12} strokeWidth={3} />
+        </span>
+      )}
+
       {active && onDelete && (
         <span
           role="button"
@@ -268,6 +363,16 @@ export default function CourseAccordion({
       setFolders(previous);
       alert(err.message || 'Could not save the new chapter order.');
     }
+  };
+
+  /** Save a new chapter name. Throws so the tab can keep the edit box open. */
+  const handleRenameTab = async (folderId, title) => {
+    const res = await fetchAPI(`/content/folder/${folderId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ title }),
+    });
+    const saved = res.folder?.title ?? title;
+    setFolders((current) => current.map((f) => (f.id === folderId ? { ...f, title: saved } : f)));
   };
 
   const handleDeleteTab = async (e, folderId) => {
@@ -1153,6 +1258,7 @@ export default function CourseAccordion({
                   onClick={() => setActiveTabId(folder.id)}
                   onDelete={isCreator ? (e) => handleDeleteTab(e, folder.id) : null}
                   deleteTitle={`Delete "${folder.title}"`}
+                  onRename={isCreator ? (title) => handleRenameTab(folder.id, title) : null}
                   /* Only the creator can drag, and only when there is somewhere
                      to drag to. */
                   draggable={isCreator && folders.length > 1}
