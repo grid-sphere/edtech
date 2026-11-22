@@ -1168,16 +1168,41 @@ router.put("/bulk-move", authMiddleware, async (req, res) => {
     }
 });
 
-// PUT /api/content/folder/:id  — rename a tab
-router.put("/folder/:id", authMiddleware, async (req, res) => {
+/*
+ * PUT /api/content/folder/:id  — rename a tab
+ *
+ * authOnly plus an explicit ownership check, the same as reorder above.
+ * authMiddleware would read :id as a content id, find no such row and wave the
+ * request through, which let any signed-in student rename any teacher's tab.
+ */
+router.put("/folder/:id", authOnly, async (req, res) => {
     try {
-        const { title } = req.body;
-        if (!title || !String(title).trim()) {
+        const title = String(req.body.title ?? "").trim();
+        if (!title) {
             return res.status(400).json({ error: "A title is required" });
         }
+        if (title.length > 255) {
+            return res.status(400).json({ error: "Tab names can be at most 255 characters" });
+        }
+
+        const owner = await pool.query(
+            `SELECT c.educator_id
+               FROM folders f
+               JOIN modules m ON m.id = f.module_id
+               JOIN courses c ON c.id = m.course_id
+              WHERE f.id = $1`,
+            [req.params.id]
+        );
+        if (owner.rows.length === 0) {
+            return res.status(404).json({ error: "Tab not found" });
+        }
+        if (!canManage(owner.rows[0].educator_id, req.user)) {
+            return res.status(403).json({ error: "Only the course owner can rename chapters" });
+        }
+
         const result = await pool.query(
             `UPDATE folders SET title = $1 WHERE id = $2 RETURNING *`,
-            [String(title).trim(), req.params.id]
+            [title, req.params.id]
         );
         if (result.rows.length === 0) {
             return res.status(404).json({ error: "Tab not found" });
