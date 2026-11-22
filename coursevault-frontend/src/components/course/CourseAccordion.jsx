@@ -231,6 +231,7 @@ export default function CourseAccordion({
   onToggle,
   onContentClick,
   isCreator,
+  canRenameTabs = isCreator,
   onAddContent,
   onAddPDF,
   onEditModule,
@@ -1258,7 +1259,7 @@ export default function CourseAccordion({
                   onClick={() => setActiveTabId(folder.id)}
                   onDelete={isCreator ? (e) => handleDeleteTab(e, folder.id) : null}
                   deleteTitle={`Delete "${folder.title}"`}
-                  onRename={isCreator ? (title) => handleRenameTab(folder.id, title) : null}
+                  onRename={canRenameTabs ? (title) => handleRenameTab(folder.id, title) : null}
                   /* Only the creator can drag, and only when there is somewhere
                      to drag to. */
                   draggable={isCreator && folders.length > 1}

@@ -662,6 +662,9 @@ export default function CourseDetailPage() {
             completedContentIds={completedContentIds}
             onProgressRefresh={() => loadProgress(course.id)}
             isCreator={isCreator}
+            /* Admins may rename any course's chapter tabs (the API allows it
+               via canManage), without taking on the owner's other controls. */
+            canRenameTabs={isCreator || user?.role === 'admin'}
             onAddContent={(mId, fId) => { setActiveModuleId(mId); setActiveFolderId(fId); setContentModalTab('video'); setIsContentModalOpen(true); }}
             onAddPDF={(mId, fId) => { setActiveModuleId(mId); setActiveFolderId(fId); setContentModalTab('pdf'); setIsContentModalOpen(true); }}
             onEditModule={(mod) => { setEditingModule(mod); setIsModuleModalOpen(true); }}
