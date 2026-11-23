@@ -76,6 +76,9 @@ const sessionClaims = (user) => ({
     email: user.email,
     role: user.role,
     name: user.name,
+    // The device session this token belongs to (utils/deviceSessions.js).
+    // Carried through renewal so a slid token stays on the same device slot.
+    ...(user.sid ? { sid: user.sid } : {}),
 });
 
 /**

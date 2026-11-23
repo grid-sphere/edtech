@@ -3,6 +3,7 @@ import { activeEnrolmentSql } from "../utils/enrollmentAccess.js";
 import pool from "../config/database.js";
 
 import { JWT_SECRET, renewedSession, RENEWED_TOKEN_HEADER } from "../config/jwt.js";
+import { checkSession } from "../utils/deviceSessions.js";
 
 /**
  * The scope carried by a token issued to an account that has not confirmed its
@@ -65,6 +66,22 @@ function rejectIfScoped(decoded, req, res) {
         code: "EMAIL_NOT_VERIFIED",
         error: "Confirm your email address to continue.",
     });
+    return true;
+}
+
+/**
+ * Refuse a token whose device session has been signed out.
+ *
+ * 401, so the client treats it like any ended session: clears the token and
+ * goes to sign-in. Scoped (verify-email) tokens are not sessions and skip this.
+ *
+ * @returns {Promise<boolean>} true if the request was rejected
+ */
+async function rejectIfSessionEnded(decoded, res) {
+    if (decoded?.scope) return false;
+    const r = await checkSession(decoded);
+    if (r.ok) return false;
+    res.status(401).json({ code: r.code, error: r.error });
     return true;
 }
 
@@ -143,6 +160,7 @@ export async function authOnly(req, res, next) {
         }
 
         if (rejectIfScoped(decoded, req, res)) return;
+        if (await rejectIfSessionEnded(decoded, res)) return;
 
         slideSession(res, decoded);
 
@@ -151,6 +169,7 @@ export async function authOnly(req, res, next) {
             email: decoded.email,
             role: decoded.role,
             name: decoded.name,
+            sid: decoded.sid,
         };
 
         next();
@@ -201,6 +220,7 @@ async function authMiddleware(req, res, next) {
       // Same gate as authOnly: a verify-scoped token gets no further than the
       // two verification routes, whichever middleware guards the request.
       if (rejectIfScoped(decoded, req, res)) return;
+      if (await rejectIfSessionEnded(decoded, res)) return;
 
       slideSession(res, decoded);
 
@@ -209,7 +229,8 @@ async function authMiddleware(req, res, next) {
           id: decoded.id,
           email: decoded.email,
           role: decoded.role,
-          name: decoded.name
+          name: decoded.name,
+          sid: decoded.sid
       };
 
       // ========== 2. PARAMETER RESOLUTION ==========
