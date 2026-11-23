@@ -9,6 +9,7 @@ import AnalyticsPage from './pages/AnalyticsPage.jsx';
 import ProfilePage from './pages/ProfilePage.jsx';
 import DeleteAccountPage from './pages/DeleteAccountPage.jsx';
 import GalleryManagementPage from './pages/GalleryManagementPage.jsx';
+import DeviceManagementPage from './pages/DeviceManagementPage.jsx';
 import PrivacyPolicyPage from './pages/PrivacyPolicyPage.jsx';
 import StudentHomePage from './pages/StudentHomePage.jsx';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
@@ -92,6 +93,7 @@ export default function App() {
                   the route itself is left open so a non-admin who follows a
                   link reads an explanation rather than being bounced. */}
               <Route path="/gallery" element={<GalleryManagementPage />} />
+              <Route path="/devices" element={<DeviceManagementPage />} />
             </Route>
             
             {/* Catch-all Redirect */}

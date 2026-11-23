@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { MailWarning, Check, Loader, X } from 'lucide-react';
-import { fetchAPI } from '../../services/api.js';
+import { fetchAPI, getDeviceId } from '../../services/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 
 /** Seconds before another code can be requested. */
@@ -62,7 +62,7 @@ export default function VerifyEmailBanner() {
     try {
       const res = await fetchAPI('/auth/verify-email', {
         method: 'POST',
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ code, deviceId: getDeviceId() }),
       });
       /*
        * The token matters as much as the user here: verify-email trades the

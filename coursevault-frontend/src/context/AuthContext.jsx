@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { fetchAPI, readTokenClaims, isTokenExpired } from '../services/api.js';
+import { fetchAPI, readTokenClaims, isTokenExpired, getDeviceId } from '../services/api.js';
 
 const AuthContext = createContext();
 
@@ -100,7 +100,7 @@ export const AuthProvider = ({ children }) => {
       method: 'POST',
       // `email` is sent alongside `identifier` for one release: a browser tab
       // left open across the deploy will be running the old backend contract.
-      body: JSON.stringify({ identifier, email: identifier, password })
+      body: JSON.stringify({ identifier, email: identifier, password, deviceId: getDeviceId() })
     });
     return finishAuth(data);
   };
@@ -175,12 +175,17 @@ export const AuthProvider = ({ children }) => {
   const register = async (payload) => {
     const data = await fetchAPI('/auth/register', {
       method: 'POST',
-      body: JSON.stringify(payload)
+      body: JSON.stringify({ ...payload, deviceId: getDeviceId() })
     });
     return finishAuth(data);
   };
 
   const logout = () => {
+    // Tell the server first so this device stops counting towards the limit.
+    // Fire-and-forget: signing out must work even when offline.
+    if (localStorage.getItem('token')) {
+      fetchAPI('/auth/logout', { method: 'POST', redirectOn401: false }).catch(() => {});
+    }
     localStorage.removeItem('token');
     setUser(null);
     // replace: otherwise Back returns to the previous account's page, which

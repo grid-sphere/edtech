@@ -17,6 +17,26 @@ const BASE_URL = getBaseUrl();
 export { BASE_URL };
 
 /**
+ * A random id for this browser, kept across sign-outs.
+ *
+ * Sent with every sign-in so the server's device limit counts this browser as
+ * one device however many times it signs in. Not a fingerprint — clearing site
+ * data simply makes a new one.
+ */
+export const getDeviceId = () => {
+  try {
+    let id = localStorage.getItem('deviceId');
+    if (!id) {
+      id = (crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`).replace(/[^A-Za-z0-9_-]/g, '');
+      localStorage.setItem('deviceId', id);
+    }
+    return id;
+  } catch {
+    return undefined;
+  }
+};
+
+/**
  * The backend origin, for URLs that are not under /api — video streams and
  * file downloads that the browser fetches directly.
  *

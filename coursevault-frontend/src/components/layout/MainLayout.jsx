@@ -1,7 +1,7 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { Outlet, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
-import { Compass, BookOpen, LayoutDashboard, BarChart3, User as UserIcon, LifeBuoy, Home, Search, Image as ImageIcon } from 'lucide-react';
+import { Compass, BookOpen, LayoutDashboard, BarChart3, User as UserIcon, LifeBuoy, Home, Search, Image as ImageIcon, Smartphone } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { isStaff } from '../../utils/roles.js';
 import FocusGame from '../fun/FocusGame.jsx';
@@ -175,7 +175,10 @@ export default function MainLayout() {
     { path: '/dashboard', label: 'Dashboard' },
     { path: '/analytics', label: 'Analytics' },
   ];
-  if (user?.role === 'admin') educatorNav.push({ path: '/gallery', label: 'Gallery' });
+  if (user?.role === 'admin') {
+    educatorNav.push({ path: '/gallery', label: 'Gallery' });
+    educatorNav.push({ path: '/devices', label: 'Devices' });
+  }
 
   const navItems = isStaff(user)
     ? educatorNav
@@ -203,6 +206,7 @@ export default function MainLayout() {
     if (path === '/dashboard') return LayoutDashboard;
     if (path === '/analytics') return BarChart3;
     if (path === '/gallery') return ImageIcon;
+    if (path === '/devices') return Smartphone;
     return Compass;
   };
 

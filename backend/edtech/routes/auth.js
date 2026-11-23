@@ -6,6 +6,7 @@ import pool from "../config/database.js";
 import authMiddleware from "../middleware/auth.js";
 
 import { JWT_SECRET, signSession } from "../config/jwt.js";
+import { openSession, deviceLimitError, revokeSession, revokeAllSessions } from "../utils/deviceSessions.js";
 import {
     normalizePhone,
     normalizeEmail,
@@ -95,7 +96,7 @@ function verifyScopedToken(user) {
  * longer a plain duration string — it can be "no expiry at all", which
  * `{ expiresIn: null }` cannot express.
  */
-const fullToken = (user) => signSession(user);
+const fullToken = (user, sid) => signSession({ ...user, sid });
 
 /**
  * Stamp the moment a session actually began.
@@ -309,11 +310,15 @@ router.post("/verify-email", authMiddleware, async (req, res) => {
          * successful verification would look like being logged out.
          */
         // The session starts here, so this is the login worth recording.
+        const session = await openSession(updated[0], req);
+        if (!session.ok) {
+            return res.status(403).json(deviceLimitError(session));
+        }
         stampLastLogin(req.user.id);
 
         res.json({
             success: true,
-            token: fullToken(updated[0]),
+            token: fullToken(updated[0], session.sid),
             user: publicUser(updated[0]),
         });
     } catch (err) {
@@ -740,10 +745,13 @@ router.post("/register", async (req, res) => {
         // Registering signs them in, so it counts as their first login.
         stampLastLogin(user.id);
 
+        // A brand-new account has no other devices, so this cannot be refused.
+        const session = await openSession(user, req);
+
         res.status(201).json({
             success: true,
             message: "Account created successfully",
-            token: fullToken(user),
+            token: fullToken(user, session.sid),
             user: publicUser(user),
         });
 
@@ -836,12 +844,21 @@ router.post("/login", async (req, res) => {
          * password, which is a genuine loss — worth remembering if sign-ins
          * from unexpected places ever start showing up.
          */
+        /*
+         * Device limit. Checked after the password, so a stranger guessing
+         * cannot learn how many devices an account is on.
+         */
+        const session = await openSession(user, req);
+        if (!session.ok) {
+            return res.status(403).json(deviceLimitError(session));
+        }
+
         stampLastLogin(user.id);
 
         res.json({
             success: true,
             message: "Login successful",
-            token: fullToken(user),
+            token: fullToken(user, session.sid),
             user: publicUser(user),
         });
 
@@ -1113,7 +1130,7 @@ router.put("/profile", authMiddleware, async (req, res) => {
         const response = { success: true, user: profile };
 
         if (nameChanged || emailChanged) {
-            response.token = signSession(profile);
+            response.token = signSession({ ...profile, sid: req.user.sid });
         }
 
         res.json(response);
@@ -1310,6 +1327,14 @@ router.post("/reset-password", async (req, res) => {
             `UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2`,
             [hash, result.userId]
         );
+
+        /*
+         * Sign out every device. Someone resetting a password may be doing it
+         * because a device was lost or shared, and it is also the student's own
+         * way to free their device slots without waiting for an admin.
+         */
+        await revokeAllSessions(result.userId).catch((err) =>
+            console.error("[auth] could not end sessions after reset:", err.message));
 
         res.json({ success: true, message: "Your password has been changed. You can sign in now." });
 
@@ -1544,7 +1569,12 @@ router.delete("/account", authMiddleware, async (req, res) => {
 
 // ROUTE 4: LOGOUT
 // POST /api/auth/logout
-router.post("/logout", authMiddleware, (req, res) => {
+router.post("/logout", authMiddleware, async (req, res) => {
+    // Free this device's slot so it no longer counts towards the limit.
+    if (req.user.sid) {
+        await revokeSession(req.user.sid, req.user.id).catch((err) =>
+            console.error("[auth] could not end session:", err.message));
+    }
     res.json({ success: true, message: "Logged out successfully" });
 });
 

@@ -21,6 +21,7 @@ import notificationRoutes from "./routes/notifications.js";
 import supportRoutes from "./routes/support.js";
 import homeRoutes from "./routes/home.js";
 import galleryRoutes from "./routes/gallery.js";
+import deviceRoutes from "./routes/devices.js";
 import settingsRoutes from "./routes/settings.js";
 import { verifyMail } from "./utils/mailer.js";
 
@@ -851,6 +852,29 @@ async function setupDatabase() {
             `ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS style VARCHAR(32) DEFAULT 'brutal'`
         );
 
+        /*
+         * Device management. NULL device_limit = unlimited (the existing
+         * behaviour), so nothing changes until an admin sets a number.
+         */
+        await pool.query(`ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS device_limit INT`);
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                device_id VARCHAR(64),
+                device_name VARCHAR(80),
+                user_agent TEXT,
+                ip VARCHAR(64),
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                last_seen_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                revoked_at TIMESTAMP
+            )
+        `);
+        await pool.query(`
+            CREATE INDEX IF NOT EXISTS idx_user_sessions_active
+                ON user_sessions (user_id) WHERE revoked_at IS NULL
+        `);
+
         // Seed the single row so reads never have to cope with its absence.
         await pool.query(`
             INSERT INTO platform_settings (id, theme, mode, density, style)
@@ -1169,6 +1193,7 @@ app.use("/api/support", supportRoutes);
 app.use("/api/home", homeRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/gallery", galleryRoutes);
+app.use("/api/devices", deviceRoutes);
 
 // ============================================
 // HLS Proxy Route
