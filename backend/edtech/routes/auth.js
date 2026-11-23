@@ -6,7 +6,7 @@ import pool from "../config/database.js";
 import authMiddleware from "../middleware/auth.js";
 
 import { JWT_SECRET, signSession } from "../config/jwt.js";
-import { openSession, deviceLimitError, revokeSession, revokeAllSessions } from "../utils/deviceSessions.js";
+import { openSession, revokeSession, revokeAllSessions } from "../utils/deviceSessions.js";
 import {
     normalizePhone,
     normalizeEmail,
@@ -311,9 +311,6 @@ router.post("/verify-email", authMiddleware, async (req, res) => {
          */
         // The session starts here, so this is the login worth recording.
         const session = await openSession(updated[0], req);
-        if (!session.ok) {
-            return res.status(403).json(deviceLimitError(session));
-        }
         stampLastLogin(req.user.id);
 
         res.json({
@@ -845,13 +842,10 @@ router.post("/login", async (req, res) => {
          * from unexpected places ever start showing up.
          */
         /*
-         * Device limit. Checked after the password, so a stranger guessing
-         * cannot learn how many devices an account is on.
+         * Opens a device session. At the device limit this signs the least
+         * recently used device out rather than refusing — see openSession.
          */
         const session = await openSession(user, req);
-        if (!session.ok) {
-            return res.status(403).json(deviceLimitError(session));
-        }
 
         stampLastLogin(user.id);
 
@@ -860,6 +854,7 @@ router.post("/login", async (req, res) => {
             message: "Login successful",
             token: fullToken(user, session.sid),
             user: publicUser(user),
+            signedOutDevices: session.signedOut,
         });
 
     } catch (err) {

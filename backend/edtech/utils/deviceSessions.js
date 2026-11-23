@@ -8,7 +8,7 @@
  * is what makes two things possible:
  *
  *   - counting how many devices a student is signed in on, so a login past the
- *     admin's limit can be refused;
+ *     admin's limit signs the least recently used device out;
  *   - signing a device out from the admin panel, which revokes the row and so
  *     kills the token on its next request.
  *
@@ -71,7 +71,7 @@ const clientIp = (req) =>
  * was signed out by an expired token, or who signs in twice on the same laptop,
  * would use up their limit on one machine.
  *
- * @returns {Promise<{ok: true, sid: string} | {ok: false, limit: number, active: number}>}
+ * @returns {Promise<{ok: true, sid: string, signedOut: number}>}
  */
 export async function openSession(user, req) {
     const deviceId = cleanDeviceId(req.body?.deviceId ?? req.headers["x-device-id"]);
@@ -92,17 +92,33 @@ export async function openSession(user, req) {
             );
         }
 
+        /*
+         * At the limit, the newest sign-in wins.
+         *
+         * Refusing the login instead locked students out: a phone that was
+         * lost, or a browser whose storage was cleared, held its slot with no
+         * way for the student to sign it out. Someone who knows the password
+         * gets in, and the least recently used devices are signed out to make
+         * room — so the account is still never live on more than `limit`
+         * devices at once.
+         */
+        let signedOut = 0;
         if (limitApplies(user)) {
             const limit = await getDeviceLimit();
             if (limit) {
-                const { rows } = await client.query(
-                    `SELECT COUNT(*)::int AS n FROM user_sessions WHERE user_id = $1 AND revoked_at IS NULL`,
-                    [user.id]
+                const evicted = await client.query(
+                    `UPDATE user_sessions SET revoked_at = NOW()
+                      WHERE id IN (
+                          SELECT id FROM user_sessions
+                           WHERE user_id = $1 AND revoked_at IS NULL
+                           ORDER BY last_seen_at DESC
+                          OFFSET $2
+                      )
+                    RETURNING id`,
+                    [user.id, limit - 1]
                 );
-                if (rows[0].n >= limit) {
-                    await client.query("ROLLBACK");
-                    return { ok: false, limit, active: rows[0].n };
-                }
+                signedOut = evicted.rowCount;
+                evicted.rows.forEach((r) => invalidate(r.id));
             }
         }
 
@@ -113,7 +129,7 @@ export async function openSession(user, req) {
         );
         await client.query("COMMIT");
         invalidate(rows[0].id);
-        return { ok: true, sid: rows[0].id };
+        return { ok: true, sid: rows[0].id, signedOut };
     } catch (err) {
         await client.query("ROLLBACK").catch(() => {});
         throw err;
@@ -121,14 +137,6 @@ export async function openSession(user, req) {
         client.release();
     }
 }
-
-/** The response for a refused sign-in. One wording, used by login and register. */
-export const deviceLimitError = ({ limit }) => ({
-    code: "DEVICE_LIMIT",
-    error:
-        `You are already signed in on ${limit} device${limit === 1 ? "" : "s"}, the most allowed. ` +
-        `Sign out on one of them, or ask your administrator to remove a device.`,
-});
 
 /*
  * A short cache of session checks.
