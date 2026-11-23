@@ -157,8 +157,8 @@ export default function DeviceManagementPage() {
       <section className={`${card} p-4 mb-5`}>
         <h2 className="font-black text-sm mb-1">Device limit per student</h2>
         <p className="text-xs font-bold text-gray-500 mb-3">
-          When a student reaches the limit, signing in on another device is refused until they sign out
-          on one, reset their password, or you remove a device below. Teachers and admins are not limited.
+          When a student signs in on a new device while already at the limit, the device they used least
+          recently is signed out automatically. Teachers and admins are not limited.
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <input
